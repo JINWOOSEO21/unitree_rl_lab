@@ -1,0 +1,8 @@
+# 저장소 최상위 .gitignore 가 *.obj / *.npz 를 제외한다. 그 규칙은 학습 산출물을
+# 겨냥한 것이고, 여기 있는 파일들은 씬을 구성하는 **필수 에셋**이라 되살린다.
+#   - assets/unitree_go2/assets/*.obj : Go2 MJCF 가 참조하는 메시. 없으면 컴파일 실패.
+#   - assets/terrain/terrain.obj      : IsaacLab 원본 삼각망 (지형 검증 기준값)
+#   - assets/terrain/terrain_meta.npz : hfield 높이 격자 + 목표점/스폰 메타
+#   - contract/*.npz                  : 골든 트레이스
+!*.obj
+!*.npz

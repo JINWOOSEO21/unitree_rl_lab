@@ -1,0 +1,43 @@
+{
+  "checkpoint": "/home/seo-jinwoo/workspace/codes/Isaaclab_Parkour/logs/rsl_rl/unitree_go2_parkour/student_pretrained/trained_v1.3~30K/model_29998.pt",
+  "iter": 29998,
+  "activation": "elu",
+  "tanh_encoder_output": false,
+  "opset": 11,
+  "inputs": {
+    "prop": 53,
+    "scan": 132,
+    "hist": 530
+  },
+  "outputs": {
+    "actions": 12
+  },
+  "arch": {
+    "num_prop": 53,
+    "num_scan": 132,
+    "num_priv_latent": 29,
+    "estimator_hidden_dims": [
+      128,
+      64
+    ],
+    "num_priv_explicit": 9,
+    "scan_encoder_dims": [
+      128,
+      64,
+      32
+    ],
+    "priv_encoder_dims": [
+      64,
+      20
+    ],
+    "actor_hidden_dims": [
+      512,
+      256,
+      128
+    ],
+    "num_actions": 12,
+    "channel_size": 10,
+    "num_hist": 10
+  },
+  "note": "hist 는 과거 prop 프레임 num_hist 개를 [t-9 ... t] 순서로 이어붙인 것. prop 인덱스 6:8(delta_yaw)은 history 에 넣기 전에 0 으로 만든다."
+}

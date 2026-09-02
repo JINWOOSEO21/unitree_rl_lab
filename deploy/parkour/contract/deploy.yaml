@@ -1,0 +1,136 @@
+# Go2 파쿠르 정책 배포 계약 — 관절 순서 실측치
+#
+# 전체 계약(obs 753 레이아웃 등)은 docs/mujoco_sim2sim_plan.md 를 본다.
+# 이 파일은 그중 "순서에 의존해서 조용히 망가지는" 값만 못박은 것이다.
+#
+# 실측 방법 — 재현:
+#   env_isaaclab:  python deploy/tools/dump_isaaclab_joint_order.py --out /tmp/il.json
+#   env_sim2real:  python deploy/tools/build_joint_maps.py --isaaclab-json /tmp/il.json \
+#                      --mjcf <menagerie>/unitree_go2/go2.xml --out /tmp/maps.json
+#
+#   - isaaclab: ParkourDefaultSceneCfg 의 robot cfg 로 Articulation 하나만 헤드리스
+#     스폰해 Articulation.data.joint_names 를 읽었다. 추측이 아니라 실측이다.
+#   - mjcf: mujoco_menagerie/unitree_go2/go2.xml 을 mujoco 로 로드해 힌지 관절과
+#     actuator 순서를 읽었다 (둘은 일치함을 assert 로 확인).
+#   - sdk: unitree_rl_lab source/unitree_rl_lab/unitree_rl_lab/assets/robots/unitree.py:122-127
+#     의 joint_sdk_names. **unitree_sdk2 헤더와의 교차 검증은 아직 안 했다** (로컬 미설치).
+
+meta:
+  measured_at: "2026-09-02"
+  robot: unitree_go2
+  policy_checkpoint: logs/rsl_rl/unitree_go2_parkour/student_pretrained/trained_v1.3~30K/model_29998.pt
+  sources:
+    isaaclab_cfg: parkour_tasks/default_cfg.py  # ParkourDefaultSceneCfg
+    mjcf_path: mujoco_menagerie/unitree_go2/go2.xml
+    mjcf_repo: https://github.com/google-deepmind/mujoco_menagerie
+    mjcf_commit: e4049d0          # 클론 시점 HEAD (submodule 로 고정하지는 않았다)
+    sdk_names_from: unitree_rl_lab/source/unitree_rl_lab/unitree_rl_lab/assets/robots/unitree.py
+  toolchain:
+    conda_env: env_sim2real       # sim2real/sim2sim 전용
+    python: "3.11.16"
+    mujoco: "3.12.0"
+
+# ---------------------------------------------------------------------------
+# 관절 순서 3종. 세 배열은 같은 12개 관절의 서로 다른 나열이다.
+# ---------------------------------------------------------------------------
+joint_names:
+  # IsaacLab(PhysX) 파싱 순서 — BFS. hip 4개 → thigh 4개 → calf 4개, 다리는 FL/FR/RL/RR.
+  # 정책 obs 의 joint_pos/joint_vel(13:37) 과 action(12) 이 전부 이 순서다.
+  isaaclab:
+    [FL_hip_joint, FR_hip_joint, RL_hip_joint, RR_hip_joint,
+     FL_thigh_joint, FR_thigh_joint, RL_thigh_joint, RR_thigh_joint,
+     FL_calf_joint, FR_calf_joint, RL_calf_joint, RR_calf_joint]
+
+  # MJCF(menagerie go2.xml) 선언 순서 — 다리별 묶음, 다리는 FL/FR/RL/RR.
+  # d.ctrl[i] / qpos[7+i] / qvel[6+i] 인덱스 규약이다 (free joint 가 앞 7/6칸).
+  mjcf:
+    [FL_hip_joint, FL_thigh_joint, FL_calf_joint,
+     FR_hip_joint, FR_thigh_joint, FR_calf_joint,
+     RL_hip_joint, RL_thigh_joint, RL_calf_joint,
+     RR_hip_joint, RR_thigh_joint, RR_calf_joint]
+
+  # Unitree SDK 모터 인덱스 순서 — 다리별 묶음, 다리는 FR/FL/RR/RL.
+  # LowCmd.motor_cmd[i] / LowState.motor_state[i] 인덱스 규약.
+  sdk:
+    [FR_hip_joint, FR_thigh_joint, FR_calf_joint,
+     FL_hip_joint, FL_thigh_joint, FL_calf_joint,
+     RR_hip_joint, RR_thigh_joint, RR_calf_joint,
+     RL_hip_joint, RL_thigh_joint, RL_calf_joint]
+
+# ---------------------------------------------------------------------------
+# 인덱스 매핑. 이름은 "src_to_dst[src_idx] = dst_idx" 로 읽는다.
+# 왕복(round-trip) 일관성은 생성 시 assert 로 검증됨.
+# ---------------------------------------------------------------------------
+index_maps:
+  # 정책 출력(IsaacLab 순서) → SDK 모터. unitree_rl_lab 의 joint_ids_map 과 같은 규약:
+  #   lowcmd.motor_cmd[il_to_sdk[i]].q = q_target[i]
+  #   joint_pos[i] = lowstate.motor_state[il_to_sdk[i]].q
+  il_to_sdk: [3, 0, 9, 6, 4, 1, 10, 7, 5, 2, 11, 8]
+
+  # 정책 출력(IsaacLab 순서) → MuJoCo ctrl/qpos.
+  #   d.ctrl[il_to_mj[i]] = tau[i]
+  #   joint_pos[i] = d.qpos[7 + il_to_mj[i]]
+  #   joint_vel[i] = d.qvel[6 + il_to_mj[i]]
+  il_to_mj: [0, 3, 6, 9, 1, 4, 7, 10, 2, 5, 8, 11]
+
+  # 역방향 (읽기 루프를 dst 기준으로 돌 때)
+  sdk_to_il: [1, 5, 9, 0, 4, 8, 3, 7, 11, 2, 6, 10]
+  mj_to_il:  [0, 4, 8, 1, 5, 9, 2, 6, 10, 3, 7, 11]
+
+# ---------------------------------------------------------------------------
+# 기본 자세. action offset(`use_default_offset=True`) 이 바로 이 값이다:
+#   q_target = clip(a, ±4.8) * 0.25 + default_joint_pos
+# 주의: 앞다리 thigh 0.8, 뒷다리 thigh 1.0 으로 비대칭이다.
+# ---------------------------------------------------------------------------
+default_joint_pos:
+  isaaclab: [0.1, -0.1, 0.1, -0.1, 0.8, 0.8, 1.0, 1.0, -1.5, -1.5, -1.5, -1.5]
+  mjcf:     [0.1, 0.8, -1.5, -0.1, 0.8, -1.5, 0.1, 1.0, -1.5, -0.1, 1.0, -1.5]
+  sdk:      [-0.1, 0.8, -1.5, 0.1, 0.8, -1.5, -0.1, 1.0, -1.5, 0.1, 1.0, -1.5]
+
+# ---------------------------------------------------------------------------
+# 액추에이터 (ParkourDCMotor). 전부 IsaacLab 순서.
+# 토크는 단순 PD 가 아니라 속도 의존 포화를 거친다:
+#   tau     = kp*(q_des - q) + kd*(0 - dq)
+#   tau_max = clip(sat*(1 - dq/dq_lim),  0, eff_lim)
+#   tau_min = clip(sat*(-1 - dq/dq_lim), -eff_lim, 0)
+#   tau     = clip(tau, tau_min, tau_max)
+# ---------------------------------------------------------------------------
+actuator:
+  order: isaaclab
+  stiffness:         [40.0, 40.0, 40.0, 40.0, 40.0, 40.0, 40.0, 40.0, 40.0, 40.0, 40.0, 40.0]
+  damping:           [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+  effort_limit:      [35.0, 35.0, 35.0, 35.0, 40.0, 40.0, 40.0, 40.0, 40.0, 40.0, 40.0, 40.0]
+  saturation_effort: [35.0, 35.0, 35.0, 35.0, 45.0, 45.0, 45.0, 45.0, 45.0, 45.0, 45.0, 45.0]
+  velocity_limit:    [52.4, 52.4, 52.4, 52.4, 30.1, 30.1, 30.1, 30.1, 30.1, 30.1, 30.1, 30.1]
+
+action:
+  order: isaaclab
+  scale: 0.25
+  clip: [-4.8, 4.8]     # 지연 큐를 통과한 뒤 scale/offset 이전에 적용
+  use_default_offset: true
+  delay_steps: 1        # student 는 use_delay=True, action_delay_steps=[1,1]
+
+timing:
+  sim_dt: 0.005         # 200 Hz
+  decimation: 4
+  step_dt: 0.02         # 정책 50 Hz
+  em_tick_steps: 5      # elevation map / delta_yaw 는 10 Hz
+
+# ---------------------------------------------------------------------------
+# 아직 확인하지 않은 것 — 여기 있는 값을 쓰기 전에 읽을 것
+# ---------------------------------------------------------------------------
+caveats:
+  # MJCF 에 없는 바디들. self-filter 캡슐(GO2_SELF_FILTER_CAPSULES)이 Head_upper/
+  # Head_lower 와 *_foot 를 바디로 참조하므로 MuJoCo 이식 때 대체 지점이 필요하다.
+  # menagerie 의 발은 바디가 아니라 geom 이고, 머리 링크는 아예 없다.
+  bodies_missing_in_mjcf: [Head_upper, Head_lower, FL_foot, FR_foot, RL_foot, RR_foot]
+
+  # menagerie go2.xml 의 keyframe "home" 은 hip 0 / thigh 0.9 / calf -1.8 로
+  # IsaacLab 기본 자세와 다르다. action offset 은 반드시 위 default_joint_pos 를 쓸 것.
+  mjcf_home_keyframe_differs: [0.0, 0.9, -1.8]
+
+  # 아래는 미검증 — 각각 별도 확인이 필요하다.
+  unverified:
+    - "관절 회전축 부호 규약(IsaacLab USD vs MJCF)이 관절별로 같은지 미확인. 순서만 맞춰서는 부족할 수 있다."
+    - "SDK 순서를 unitree_sdk2 헤더(LegID enum)와 교차 검증하지 않았다 — 출처는 unitree_rl_lab 한 곳뿐."
+    - "질량/관성/COM 이 IsaacLab USD 와 menagerie MJCF 사이에서 일치하는지 미확인."

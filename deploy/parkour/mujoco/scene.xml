@@ -1,0 +1,31 @@
+<mujoco model="go2 parkour">
+  <!-- 이 파일은 build_scene.py 가 생성한다. 직접 고치지 말 것. -->
+  <include file="assets/unitree_go2/go2.xml"/>
+
+  <!-- go2.xml 의 meshdir="assets" 는 **최상위 파일** 기준으로 해석되므로
+       include 만 하면 mesh 경로가 깨진다. include 뒤에 compiler 를 다시 선언해
+       덮어쓴다 (뒤에 오는 값이 이긴다 — 실측 확인). -->
+  <compiler angle="radian" meshdir="assets/unitree_go2/assets" autolimits="true"/>
+
+  <!-- IsaacLab 과 같은 물리 스텝. 정책은 decimation=4 로 50Hz. -->
+  <option timestep="0.005"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="-130" elevation="-20"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+    <!-- 높이 데이터는 load_scene() 이 model.hfield_data 로 부어 넣는다 (PNG 양자화 회피). -->
+    <hfield name="parkour" nrow="241" ncol="561" size="14.000000 6.000000 1.285000 1.000000"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 4" dir="0 0 -1" directional="true"/>
+    <geom name="terrain" type="hfield" hfield="parkour"
+          pos="0.000000 0.000000 -0.035000"
+          friction="1.0 0.005 0.0001" condim="3" contype="1" conaffinity="1"/>
+  </worldbody>
+</mujoco>
