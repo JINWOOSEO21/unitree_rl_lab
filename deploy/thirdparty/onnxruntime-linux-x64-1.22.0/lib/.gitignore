@@ -1,0 +1,10 @@
+# 최상위 .gitignore 의 `**/*.so` 가 버전 없는 심링크 libonnxruntime.so 를 걸러낸다.
+# 그런데 robots/*/CMakeLists.txt 가 링크할 때 정확히 그 이름을 참조하므로
+# (예: go2/CMakeLists.txt:19), 없으면 빌드가 다음처럼 실패한다:
+#
+#   make[2]: *** 'go2_ctrl'에서 필요한 '.../lib/libonnxruntime.so' 타겟을
+#            만들 규칙이 없습니다. 멈춤.
+#
+# libonnxruntime.so.1 / .so.1.22.0 은 `*.so` 패턴에 안 걸려서 이미 추적되는데
+# 심링크만 빠져 있었다. 여기서 되살린다.
+!libonnxruntime.so
