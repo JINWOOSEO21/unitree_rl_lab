@@ -4,9 +4,15 @@ FSM:
       id: 1
     FixStand:
       id: 2
-    Velocity:
-      id: 3
-      type: RLBase
+    # Velocity(State_RLBase)는 이 포크에서 꺼 둔다.
+    # policy_dir 이 가리키는 logs/rsl_rl/unitree_go2_velocity 가 없어서 상태 초기화 중
+    # std::filesystem_error 로 **프로세스가 죽는다**(FixStand 도 같이 못 쓰게 된다).
+    # 우리가 배포하려는 것은 속도 추종이 아니라 파쿠르 정책이고, 그 관측 753 은
+    # ObservationManager 로 표현할 수 없어 State_RLBase 를 재사용할 수도 없다.
+    # 3-4 에서 State_Parkour 를 추가하면 이 자리에 Parkour 항목이 들어간다.
+    # Velocity:
+    #   id: 3
+    #   type: RLBase
   Passive:
     transitions: 
       FixStand: LT + A.on_pressed
@@ -15,7 +21,7 @@ FSM:
   FixStand:
     transitions: 
       Passive: LT + B.on_pressed
-      Velocity: start.on_pressed
+      # Velocity: start.on_pressed   # 위와 함께 비활성 (3-4 에서 Parkour 로 대체)
     kp: [60, 80, 80, 60, 80, 80, 60, 80, 80, 60, 80, 80]
     kd: [5, 4, 4, 5, 4, 4, 5, 4, 4, 5, 4, 4]
     ts: [0, 1, 2]
@@ -24,8 +30,8 @@ FSM:
       [0.0, 1.36, -2.65, 0.0, 1.36, -2.65, 0.0, 1.36, -2.65, 0.0, 1.36, -2.65],
       [0., 0.8, -1.5, 0., 0.8, -1.5, 0., 0.8, -1.5, 0., 0.8, -1.5],
     ]
-  Velocity:
-    transitions: 
-      Passive: LT + B.on_pressed
-    policy_dir: ../../../logs/rsl_rl/unitree_go2_velocity
+  # Velocity:
+  #   transitions:
+  #     Passive: LT + B.on_pressed
+  #   policy_dir: ../../../logs/rsl_rl/unitree_go2_velocity
     
