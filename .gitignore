@@ -73,3 +73,6 @@ datasets
 
 # Mimic
 *.npz
+
+# Claude Code 도구 상태 (커밋 대상 아님)
+.omc/

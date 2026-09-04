@@ -54,6 +54,11 @@ def main() -> int:
     ap.add_argument("--out", required=True)
     ap.add_argument("--settle", type=float, default=1.5, help="출발 자세 유지 시간 [s]")
     ap.add_argument("--iface", default="lo")
+    ap.add_argument("--no-stand", action="store_true",
+                    help="기립 단계를 건너뛴다. 기본은 기립부터 한다 — 시뮬레이터를 갓 띄우면 "
+                         "로봇은 **누워 있고**, 목표 자세를 그냥 유지시켜서는 못 일어난다. "
+                         "예전에 이 단계가 없어 z=0.04 로 엎드린 채 재생하고는 "
+                         "'액추에이터는 문제없다' 는 잘못된 결론을 냈다.")
     a = ap.parse_args()
 
     import yaml
@@ -125,6 +130,44 @@ def main() -> int:
             cmd.motor_cmd[s].kd = float(kd[i])
         cmd.crc = crc.Crc(cmd)
         pub.Write(cmd)
+
+    def send_gains(q_il, kp_il, kd_il):
+        for i in range(12):
+            s = int(il_to_sdk[i])
+            cmd.motor_cmd[s].q = float(q_il[i])
+            cmd.motor_cmd[s].kp = float(kp_il[i])
+            cmd.motor_cmd[s].kd = float(kd_il[i])
+        cmd.crc = crc.Crc(cmd)
+        pub.Write(cmd)
+
+    if not a.no_stand:
+        # go2_ctrl 의 State_FixStand 와 같은 절차 (config.yaml 의 ts/qs/kp/kd).
+        # IsaacLab 순서: hip(FL,FR,RL,RR), thigh(...), calf(...)
+        kp_st = np.array([60.0] * 4 + [80.0] * 8)
+        kd_st = np.array([5.0] * 4 + [4.0] * 8)
+        wp1 = np.array([0.0] * 4 + [1.36] * 4 + [-2.65] * 4)
+        wp2 = np.array([0.0] * 4 + [0.8] * 4 + [-1.5] * 4)
+        with lock:
+            q0 = np.array(rec[-1][1])[np.argsort(il_to_sdk)] if rec else wp2.copy()
+        q0 = np.array([0.0] * 12) if not np.isfinite(q0).all() else q0
+        print("A0. 기립 (FixStand 와 같은 램프, 2초 + 정착 1.5초)")
+        t0 = time.time()
+        while True:
+            el = time.time() - t0
+            if el >= 3.5:
+                break
+            if el < 1.0:
+                q_des = q0 + (wp1 - q0) * el
+            elif el < 2.0:
+                q_des = wp1 + (wp2 - wp1) * (el - 1.0)
+            else:
+                q_des = wp2
+            send_gains(q_des, kp_st, kd_st)
+            time.sleep(0.002)
+        with lock:
+            zc = None if not rec or rec[-1][3] is None else rec[-1][3][2]
+        print(f"    기립 후 높이(IMU site z) {zc if zc is None else f'{zc:.3f}'} m  "
+              f"(정상 ≈ 0.37; 0.2 이하면 못 일어난 것이다)")
 
     print(f"A. 출발 자세로 안정화 ({a.settle:.1f}s) — 트레이스 첫 프레임의 관절각")
     t0 = time.time()

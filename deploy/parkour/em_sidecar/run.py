@@ -28,6 +28,9 @@ def main() -> int:
     p.add_argument("--iface", default="lo")
     p.add_argument("--topic", default="rt/parkour/scandots")
     p.add_argument("--duration", type=float, default=None, help="초 (미지정이면 무한)")
+    p.add_argument("--record", default=None,
+                   help="tick 마다 (시각, base pose, scan, valid) 를 npz 로 남긴다. "
+                        "주행 중에도 지도가 맞는지 지형과 대조하기 위한 것.")
     a = p.parse_args()
 
     cfg = SidecarCfg(
@@ -37,6 +40,7 @@ def main() -> int:
         domain_id=a.domain,
         interface=a.iface,
         publish_topic=a.topic,
+        record_path=Path(a.record) if a.record else None,
     )
     EmSidecar(cfg).run(duration=a.duration)
     return 0

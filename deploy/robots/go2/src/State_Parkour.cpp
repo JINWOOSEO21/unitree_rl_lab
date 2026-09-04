@@ -53,6 +53,17 @@ State_Parkour::State_Parkour(int state_mode, std::string state_string)
     bad_orientation_rad_ = cfg_or<float>(cfg, "bad_orientation", 1.0f);
     log_path_ = cfg_or<std::string>(cfg, "log_obs", std::string(""));
 
+    // 실험용 덮어쓰기(-1 이면 계약값 그대로). 학습은 액션을 1 스텝(20 ms) 늦춰
+    // 적용하고 정책은 그 지연을 전제로 학습됐다. 그런데 배포에는 DDS 왕복과 시뮬
+    // 적용까지 **실제 지연**이 이미 있다. 그 위에 1 스텝을 더 얹으면 총 지연이
+    // 학습보다 커진다. 어느 쪽이 학습에 가까운지는 재 봐야 안다.
+    const int dly = cfg_or<int>(cfg, "action_delay_override", -1);
+    if (dly >= 0 && dly != contract_.action_delay_steps) {
+        spdlog::warn("State_Parkour: action_delay_steps {} → {} 로 덮어씀 (실험용)",
+                     contract_.action_delay_steps, dly);
+        contract_.action_delay_steps = dly;
+    }
+
     obs_ = std::make_unique<ObservationBuilder>(contract_);
     act_ = std::make_unique<ActionPipeline>(contract_);
     scan_ = std::make_unique<ScandotsSubscriber>(

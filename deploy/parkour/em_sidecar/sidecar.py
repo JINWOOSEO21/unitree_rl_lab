@@ -111,6 +111,10 @@ class SidecarCfg:
     odom_offset_in_base: np.ndarray = field(
         default_factory=lambda: IMU_SITE_IN_BASE.copy()
     )
+    # tick 마다 (시각, base pose, scan, valid) 를 모아 npz 로 남긴다. 정지 상태
+    # 게이트만으로는 **주행 중** 지도가 어긋나는지 알 수 없다 — 정책이 헛것을 보고
+    # 반응하는지 판정하려면 자세와 함께 기록해야 한다.
+    record_path: Path | None = None
     verbose: bool = True
 
 
@@ -144,6 +148,7 @@ class EmSidecar:
         self._prev_pos: np.ndarray | None = None
         self.n_ticks = 0
         self.last_stats: dict[str, float] = {}
+        self._rec: list[tuple] = []
 
         self._backend = None  # 지연 초기화 (cupy 컨텍스트를 첫 tick 에서 만든다)
         self._torch = None
@@ -272,9 +277,30 @@ class EmSidecar:
             "ub_cells": float(int((self.ub_frac > 1e-6).sum())),
             "stamp": stamp,
         }
+        if self.cfg.record_path is not None:
+            # base_pos 는 이미 odom 보정을 거친 **base 원점**이다. 나중에 지형과
+            # 대조할 때 이 값을 그대로 써야 한다 (raw sportmodestate 를 쓰면 4.2 cm
+            # 틀린다 — 예전에 그 실수로 "지도 표류" 라는 잘못된 결론을 냈다).
+            self._rec.append((float(stamp), base_pos.copy(), base_quat.copy(),
+                              self.h_obs.copy(), self.valid_frac.copy()))
         if self._pub is not None:
             self._publish(stamp, base_pos)
         return self.h_obs
+
+    def save_record(self) -> None:
+        """기록해 둔 tick 들을 npz 로 떨군다 (record_path 가 있을 때만)."""
+        if self.cfg.record_path is None or not self._rec:
+            return
+        np.savez_compressed(
+            self.cfg.record_path,
+            stamp=np.array([r[0] for r in self._rec], dtype=np.float64),
+            base_pos=np.stack([r[1] for r in self._rec]).astype(np.float32),
+            base_quat=np.stack([r[2] for r in self._rec]).astype(np.float32),
+            scan=np.stack([r[3] for r in self._rec]).astype(np.float32),
+            valid=np.stack([r[4] for r in self._rec]).astype(np.float32),
+        )
+        if self.cfg.verbose:
+            print(f"[em] tick 기록 {len(self._rec)}개 → {self.cfg.record_path}", flush=True)
 
     # -- DDS -----------------------------------------------------------------
     def _publish(self, stamp: float, base_pos: np.ndarray) -> None:
@@ -325,6 +351,13 @@ class EmSidecar:
             print(f"[em] 발행 토픽: {self.cfg.publish_topic}", flush=True)
 
     def run(self, duration: float | None = None, report_period: float = 2.0) -> None:
+        try:
+            self._run(duration, report_period)
+        finally:
+            # SIGINT 로 끝나는 게 보통이라 기록은 반드시 여기서 떨군다.
+            self.save_record()
+
+    def _run(self, duration: float | None, report_period: float) -> None:
         self.start_dds()
         t0 = time.time()
         last = t0
