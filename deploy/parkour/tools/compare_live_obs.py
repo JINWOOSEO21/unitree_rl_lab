@@ -50,8 +50,12 @@ def load_live(path: Path):
     body = np.frombuffer(raw, dtype=np.float32, offset=8)
     n = body.size // rec
     body = body[: n * rec].reshape(n, rec)
-    return dict(t=body[:, 0], prop=body[:, 1:54], scan=body[:, 54:186],
-                action=body[:, 186:198])
+    out = dict(t=body[:, 0], prop=body[:, 1:54], scan=body[:, 54:186],
+               action=body[:, 186:198])
+    if rec >= 200:      # 진단 필드가 있는 판
+        out["scan_age"] = body[:, 198]
+        out["scan_count"] = body[:, 199]
+    return out
 
 
 def main() -> int:

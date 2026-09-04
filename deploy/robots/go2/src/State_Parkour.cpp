@@ -133,7 +133,8 @@ void State_Parkour::enter()
         log_ = std::fopen(log_path_.c_str(), "wb");
         if (log_) {
             std::fwrite("PKOB", 1, 4, log_);          // magic
-            const int rec = 1 + kNumProp + kNumScan + kNumJoints;   // 198
+            // t, prop, scan, action, scan_age, scan_count  (진단 2개 포함)
+            const int rec = 1 + kNumProp + kNumScan + kNumJoints + 2;   // 200
             std::fwrite(&rec, sizeof(int), 1, log_);
             log_t0_ = std::chrono::duration<double>(
                 std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -230,6 +231,13 @@ void State_Parkour::policy_step()
         std::fwrite(prop.data(), sizeof(float), kNumProp, log_);
         std::fwrite(feed["scan"].data(), sizeof(float), kNumScan, log_);
         std::fwrite(a.data(), sizeof(float), kNumJoints, log_);
+        // scandots 신선도. 0.5s 가드에는 안 걸려도 지도가 갱신을 멈춘 채 유효한 값을
+        // 계속 내보내면 정책 입력이 얼어붙는다 — 그 경우 age 는 작은데 count 가
+        // 멈춘다. 값 자체의 정지 여부는 기록된 scan 을 프레임 간 비교해 본다.
+        const float age = static_cast<float>(scan_->last_age());
+        const float cnt = static_cast<float>(scan_->count());
+        std::fwrite(&age, sizeof(float), 1, log_);
+        std::fwrite(&cnt, sizeof(float), 1, log_);
     }
 
     obs_->push(prop);
