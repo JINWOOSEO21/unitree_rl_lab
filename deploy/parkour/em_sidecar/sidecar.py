@@ -243,7 +243,9 @@ class EmSidecar:
         # MuJoCo 는 라이다·odometry 가 GT 라 학습의 노이즈 항이 비어 있다. 정책은
         # 흔들리는 지도를 전제로 학습됐으므로 너무 깨끗한 입력이 분포 밖일 수 있다.
         if self._noise is not None:
-            from .kinematics import yaw_from_quat
+            # 주의: 여기서 `from .kinematics import yaw_from_quat` 를 하면 그 이름이
+            # **함수 지역 변수**가 되어, 노이즈가 꺼졌을 때 아래(291행)의 원래 사용처가
+            # UnboundLocalError 로 죽는다. 모듈 상단 import 를 그대로 쓴다.
             from .train_noise import rpy_to_mat as _rpy_to_mat
             yaw = yaw_from_quat(base_quat)
             roll = np.arctan2(2.0 * (base_quat[0] * base_quat[1]
