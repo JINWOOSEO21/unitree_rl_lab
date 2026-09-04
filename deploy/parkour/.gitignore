@@ -6,3 +6,6 @@
 #   - contract/*.npz                  : 골든 트레이스
 !*.obj
 !*.npz
+
+# 테스트 빌드 산출물
+tests/build/

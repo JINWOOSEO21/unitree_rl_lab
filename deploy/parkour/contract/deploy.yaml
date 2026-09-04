@@ -77,6 +77,12 @@ index_maps:
   sdk_to_il: [1, 5, 9, 0, 4, 8, 3, 7, 11, 2, 6, 10]
   mj_to_il:  [0, 4, 8, 1, 5, 9, 2, 6, 10, 3, 7, 11]
 
+  # 발 4개의 순서 매핑. 관절 12개와는 **다른 배열**이라 따로 둔다 (obs[49:53] 용).
+  #   IsaacLab 발 순서 : FL, FR, RL, RR   (골든 트레이스 foot_body_names 실측)
+  #   SDK  foot_force  : FR, FL, RR, RL   (다리 순서 규약과 동일)
+  #   foot_force_il[i] = lowstate.foot_force[il_foot_to_sdk[i]]
+  il_foot_to_sdk: [1, 0, 3, 2]
+
 # ---------------------------------------------------------------------------
 # 기본 자세. action offset(`use_default_offset=True`) 이 바로 이 값이다:
 #   q_target = clip(a, ±4.8) * 0.25 + default_joint_pos
@@ -130,7 +136,12 @@ caveats:
   mjcf_home_keyframe_differs: [0.0, 0.9, -1.8]
 
   # 아래는 미검증 — 각각 별도 확인이 필요하다.
+  # [해소됨 2026-09-03] 관절 회전축 부호 규약(IsaacLab USD vs MJCF).
+  # deploy/tools/build_em_contract.py 가 IsaacLab 실측 pose 8개에서 관절 축과
+  # 링크 오프셋을 역산했더니 MJCF 선언값과 정확히 일치했고(hip [+1,0,0],
+  # thigh/calf [0,+1,0], 오프셋 0.1934/0.0465/0.0955/-0.213), 그 모델의 FK 가
+  # IsaacLab pose 를 max 0.0006 mm 로 재현했다. 즉 두 기구학은 같다.
+
   unverified:
-    - "관절 회전축 부호 규약(IsaacLab USD vs MJCF)이 관절별로 같은지 미확인. 순서만 맞춰서는 부족할 수 있다."
     - "SDK 순서를 unitree_sdk2 헤더(LegID enum)와 교차 검증하지 않았다 — 출처는 unitree_rl_lab 한 곳뿐."
     - "질량/관성/COM 이 IsaacLab USD 와 menagerie MJCF 사이에서 일치하는지 미확인."
