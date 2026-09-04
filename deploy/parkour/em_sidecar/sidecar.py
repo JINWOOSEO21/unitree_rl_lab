@@ -115,6 +115,11 @@ class SidecarCfg:
     # 게이트만으로는 **주행 중** 지도가 어긋나는지 알 수 없다 — 정책이 헛것을 보고
     # 반응하는지 판정하려면 자세와 함께 기록해야 한다.
     record_path: Path | None = None
+    # 학습과 같은 EM 입력 노이즈를 얹는다 (실험용). MuJoCo 는 라이다·odometry 가
+    # GT 라 학습의 노이즈 항이 비어 있는데, 정책은 흔들리는 지도를 전제로 학습됐다.
+    # 실기에서는 그 오차가 진짜로 생기므로 켜면 안 된다 — sim2sim 실험용이다.
+    train_noise: bool = False
+    train_noise_seed: int | None = None
     verbose: bool = True
 
 
@@ -149,6 +154,13 @@ class EmSidecar:
         self.n_ticks = 0
         self.last_stats: dict[str, float] = {}
         self._rec: list[tuple] = []
+        self._last_stamp: float | None = None
+        self._noise = None
+        if cfg.train_noise:
+            from .train_noise import TrainNoise, TrainNoiseCfg
+            self._noise = TrainNoise(TrainNoiseCfg(seed=cfg.train_noise_seed))
+            if cfg.verbose:
+                print("[em] 학습과 같은 EM 입력 노이즈 켜짐 (실험용)", flush=True)
 
         self._backend = None  # 지연 초기화 (cupy 컨텍스트를 첫 tick 에서 만든다)
         self._torch = None
@@ -226,6 +238,27 @@ class EmSidecar:
         R_base = quat_to_mat(base_quat)
         # 받은 위치는 base 원점이 아니다 (IMU_SITE_IN_BASE 주석 참조) — 되돌린다.
         base_pos = base_pos - R_base @ self.cfg.odom_offset_in_base
+
+        # 학습과 같은 EM 입력 노이즈 (실험용, train_noise.py 참조).
+        # MuJoCo 는 라이다·odometry 가 GT 라 학습의 노이즈 항이 비어 있다. 정책은
+        # 흔들리는 지도를 전제로 학습됐으므로 너무 깨끗한 입력이 분포 밖일 수 있다.
+        if self._noise is not None:
+            from .kinematics import yaw_from_quat
+            from .train_noise import rpy_to_mat as _rpy_to_mat
+            yaw = yaw_from_quat(base_quat)
+            roll = np.arctan2(2.0 * (base_quat[0] * base_quat[1]
+                                     + base_quat[2] * base_quat[3]),
+                              1.0 - 2.0 * (base_quat[1] ** 2 + base_quat[2] ** 2))
+            sp = np.clip(2.0 * (base_quat[0] * base_quat[2]
+                                - base_quat[3] * base_quat[1]), -1.0, 1.0)
+            pitch = np.arcsin(sp)
+            dt = 1.0 / 10.0 if self._last_stamp is None else max(
+                1e-3, stamp - self._last_stamp)
+            self._last_stamp = stamp
+            base_pos, yaw, roll, pitch = self._noise.perturb_pose(
+                base_pos, yaw, roll, pitch, dt)
+            R_base = _rpy_to_mat(roll, pitch, yaw)
+            points_sensor = self._noise.perturb_points(points_sensor)
         R_s = R_base @ self.R_mount
         t_s = base_pos + R_base @ MOUNT_POS
 

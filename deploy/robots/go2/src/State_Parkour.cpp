@@ -229,6 +229,7 @@ void State_Parkour::policy_step()
     {
         std::lock_guard<std::mutex> lk(q_mtx_);
         q_target_ = q;
+        target_stamp_us_ = now_us();     // 지연 계측용 (run() 이 lowcmd 에 실어 보낸다)
     }
     have_target_ = true;
 
@@ -259,13 +260,27 @@ void State_Parkour::run()
 {
     if (!have_target_.load()) return;  // 첫 정책 스텝 전에는 손대지 않는다
     std::array<float, kNumJoints> q;
+    uint32_t stamp;
     {
         std::lock_guard<std::mutex> lk(q_mtx_);
         q = q_target_;
+        stamp = target_stamp_us_;
     }
     for (int i = 0; i < kNumJoints; ++i) {
         lowcmd->msg_.motor_cmd()[contract_.il_to_sdk[i]].q() = q[i];
     }
+    // 지연 계측용: 이 목표각을 **정책이 만든 시각**을 실어 보낸다. 시뮬레이터
+    // 브리지가 토크를 거는 순간 이 값의 나이를 재면 종단간 지연이 그대로 나온다.
+    // (같은 머신이라 CLOCK_MONOTONIC 이 두 프로세스에서 공유된다.)
+    // 실기에서는 이 필드를 읽는 쪽이 없으므로 무해하다.
+    lowcmd->msg_.reserve() = stamp;
+}
+
+uint32_t State_Parkour::now_us()
+{
+    return static_cast<uint32_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
 void State_Parkour::stop_thread()

@@ -63,6 +63,10 @@ private:
     std::array<float, parkour::kNumJoints> q_target_{};
     std::atomic<bool> have_target_{false};
     std::atomic<bool> tripped_{false};   // 안전장치 로그를 한 번만 찍기 위한 래치
+    // 지연 계측: 이 목표각을 **정책이 만든 시각** [us, CLOCK_MONOTONIC].
+    // run() 이 lowcmd.reserve 로 실어 보내고 시뮬레이터가 토크를 거는 순간 나이를 잰다.
+    uint32_t target_stamp_us_{0};
+    static uint32_t now_us();
 
     // 관측 녹화 (config 의 log_obs 로 켠다). 폐루프에서만 드러나는 문제를 잡으려면
     // **정책이 실제로 본 것**을 남겨 학습 분포와 대조해야 한다. 골든 게이트는
