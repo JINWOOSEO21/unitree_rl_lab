@@ -51,6 +51,7 @@ State_Parkour::State_Parkour(int state_mode, std::string state_string)
     cmd_vx_min_ = cfg_or<float>(cfg, "cmd_vx_min", 0.3f);
     cmd_vx_max_ = cfg_or<float>(cfg, "cmd_vx_max", 0.8f);
     bad_orientation_rad_ = cfg_or<float>(cfg, "bad_orientation", 1.0f);
+    log_path_ = cfg_or<std::string>(cfg, "log_obs", std::string(""));
 
     obs_ = std::make_unique<ObservationBuilder>(contract_);
     act_ = std::make_unique<ActionPipeline>(contract_);
@@ -126,6 +127,20 @@ void State_Parkour::enter()
     if (scan_->count() == 0) {
         spdlog::warn("State_Parkour: scandots 를 아직 한 번도 못 받았다 "
                      "(EM 사이드카가 떠 있는가?). 평지로 가정하고 시작한다.");
+    }
+
+    if (!log_path_.empty()) {
+        log_ = std::fopen(log_path_.c_str(), "wb");
+        if (log_) {
+            std::fwrite("PKOB", 1, 4, log_);          // magic
+            const int rec = 1 + kNumProp + kNumScan + kNumJoints;   // 198
+            std::fwrite(&rec, sizeof(int), 1, log_);
+            log_t0_ = std::chrono::duration<double>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+            spdlog::info("State_Parkour: 관측 녹화 → {}", log_path_);
+        } else {
+            spdlog::warn("State_Parkour: 로그 파일을 열 수 없다: {}", log_path_);
+        }
     }
 
     running_ = true;
@@ -207,6 +222,16 @@ void State_Parkour::policy_step()
 
     // 관측을 만든 **뒤에** history 에 넣는다 (학습과 같은 순서 — hist 는 현재 프레임을
     // 포함하지 않는다). prime() 을 이미 했으므로 여기서는 밀어 넣기만 한다.
+    if (log_) {
+        const float t = static_cast<float>(
+            std::chrono::duration<double>(
+                std::chrono::steady_clock::now().time_since_epoch()).count() - log_t0_);
+        std::fwrite(&t, sizeof(float), 1, log_);
+        std::fwrite(prop.data(), sizeof(float), kNumProp, log_);
+        std::fwrite(feed["scan"].data(), sizeof(float), kNumScan, log_);
+        std::fwrite(a.data(), sizeof(float), kNumJoints, log_);
+    }
+
     obs_->push(prop);
     ++step_count_;
 }
@@ -228,4 +253,9 @@ void State_Parkour::stop_thread()
 {
     running_ = false;
     if (thread_.joinable()) thread_.join();
+    if (log_) {
+        std::fclose(log_);
+        log_ = nullptr;
+        spdlog::info("State_Parkour: 관측 녹화 종료 ({} 스텝)", step_count_);
+    }
 }

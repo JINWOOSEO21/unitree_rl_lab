@@ -14,8 +14,10 @@
 #pragma once
 
 #include <atomic>
+#include <cstdio>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 
 #include "FSM/FSMState.h"
@@ -61,6 +63,14 @@ private:
     std::array<float, parkour::kNumJoints> q_target_{};
     std::atomic<bool> have_target_{false};
     std::atomic<bool> tripped_{false};   // 안전장치 로그를 한 번만 찍기 위한 래치
+
+    // 관측 녹화 (config 의 log_obs 로 켠다). 폐루프에서만 드러나는 문제를 잡으려면
+    // **정책이 실제로 본 것**을 남겨 학습 분포와 대조해야 한다. 골든 게이트는
+    // 녹화된 입력만 검증하므로 여기서 어긋나는 것은 못 잡는다.
+    // 레코드: float32 t, prop[53], scan[132], action_raw[12]  (총 198)
+    std::FILE* log_ = nullptr;
+    std::string log_path_;
+    double log_t0_ = 0.0;
 
     // 접촉 필터용 직전 프레임 (학습은 now|prev 로 판정한다)
     std::array<bool, parkour::kNumFeet> prev_contact_{};

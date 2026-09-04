@@ -53,4 +53,7 @@ FSM:
     cmd_vx_min: 0.3            # 학습 명령 분포 0.3~0.8 m/s. 0 은 분포 밖이라 안 쓴다
     cmd_vx_max: 0.8
     bad_orientation: 1.0       # [rad] 기울기가 이보다 크면 Passive
+    # 관측 녹화 (비우면 끔). 폐루프에서만 드러나는 문제를 학습 분포와 대조하려면
+    # 정책이 실제로 본 것을 남겨야 한다 — 골든 게이트는 녹화된 입력만 검증한다.
+    log_obs: ""                # 예: /tmp/parkour_obs.bin
     
