@@ -13,6 +13,9 @@ FSM:
     # Velocity:
     #   id: 3
     #   type: RLBase
+    Parkour:
+      id: 4
+      type: Parkour
   Passive:
     transitions: 
       FixStand: LT + A.on_pressed
@@ -21,7 +24,7 @@ FSM:
   FixStand:
     transitions: 
       Passive: LT + B.on_pressed
-      # Velocity: start.on_pressed   # 위와 함께 비활성 (3-4 에서 Parkour 로 대체)
+      Parkour: start.on_pressed
     kp: [60, 80, 80, 60, 80, 80, 60, 80, 80, 60, 80, 80]
     kd: [5, 4, 4, 5, 4, 4, 5, 4, 4, 5, 4, 4]
     ts: [0, 1, 2]
@@ -34,4 +37,20 @@ FSM:
   #   transitions:
   #     Passive: LT + B.on_pressed
   #   policy_dir: ../../../logs/rsl_rl/unitree_go2_velocity
+
+  # 파쿠르 정책 (trained_v1.3 EM student).
+  # 관측 753 은 ObservationManager 로 표현할 수 없어 State_Parkour 가 직접 조립한다.
+  # scandots 132 는 별도 프로세스(EM 사이드카)가 rt/parkour/scandots 로 준다 —
+  # 그것이 없으면 정책이 눈을 감고 달리는 셈이라 timeout 을 걸어 Passive 로 떨군다.
+  Parkour:
+    transitions:
+      Passive: LT + B.on_pressed
+    # deploy.yaml + policy.onnx 가 있는 폴더 (proj_dir = robots/go2 기준 상대경로)
+    policy_dir: ../../parkour/contract
+    scandots_topic: rt/parkour/scandots
+    scandots_timeout: 0.5      # [s] 이보다 오래 끊기면 Passive
+    contact_threshold: 2.0     # [N] 학습값. 실기 foot_force 는 원시 정수라 재보정 필요
+    cmd_vx_min: 0.3            # 학습 명령 분포 0.3~0.8 m/s. 0 은 분포 밖이라 안 쓴다
+    cmd_vx_max: 0.8
+    bad_orientation: 1.0       # [rad] 기울기가 이보다 크면 Passive
     

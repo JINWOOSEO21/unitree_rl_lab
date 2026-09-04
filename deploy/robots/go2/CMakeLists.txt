@@ -11,6 +11,7 @@ include_directories(
   include
   ${PROJECT_SOURCE_DIR}/../../thirdparty/onnxruntime-linux-x64-1.22.0/include
   ${PROJECT_SOURCE_DIR}/../../include/
+  ${PROJECT_SOURCE_DIR}/../../parkour/include   # parkour/*.h (관측/액션/조향/scandots)
 )
 
 link_libraries(
