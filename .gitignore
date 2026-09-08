@@ -76,3 +76,6 @@ datasets
 
 # Claude Code 도구 상태 (커밋 대상 아님)
 .omc/
+
+# 렌더된 sim2sim 영상 (tools/render_video.py 산출물)
+deploy/parkour/videos/

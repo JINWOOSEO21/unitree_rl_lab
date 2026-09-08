@@ -37,6 +37,8 @@ def main() -> int:
     p.add_argument("--record", default=None,
                    help="tick 마다 (시각, base pose, scan, valid) 를 npz 로 남긴다. "
                         "주행 중에도 지도가 맞는지 지형과 대조하기 위한 것.")
+    p.add_argument("--record-map", action="store_true",
+                   help="--record 와 함께: tick 마다 EM 전체 지도도 남긴다 (영상용)")
     p.add_argument("--odom", choices=["sport", "leg"], default="sport",
                    help="base 위치 출처. sport=rt/sportmodestate, "
                         "leg=다리 운동학+IMU 자체 적분 (실기 저수준 제어용 후보).")
@@ -77,6 +79,7 @@ def main() -> int:
         interface=a.iface,
         publish_topic=a.topic,
         record_path=Path(a.record) if a.record else None,
+        record_map=a.record_map,
         train_noise=a.train_noise,
         train_noise_cfg=noise_cfg,
         odom_source=a.odom,

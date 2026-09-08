@@ -133,6 +133,8 @@ class SidecarCfg:
     # 게이트만으로는 **주행 중** 지도가 어긋나는지 알 수 없다 — 정책이 헛것을 보고
     # 반응하는지 판정하려면 자세와 함께 기록해야 한다.
     record_path: Path | None = None
+    # record_path 와 함께: tick 마다 EM 전체 지도(34×34 레이어)도 남긴다 (영상·진단용).
+    record_map: bool = False
     # 학습과 같은 EM 입력 노이즈를 얹는다 (실험용). MuJoCo 는 라이다·odometry 가
     # GT 라 학습의 노이즈 항이 비어 있는데, 정책은 흔들리는 지도를 전제로 학습됐다.
     # 실기에서는 그 오차가 진짜로 생기므로 켜면 안 된다 — sim2sim 실험용이다.
@@ -176,6 +178,7 @@ class EmSidecar:
         self.n_ticks = 0
         self.last_stats: dict[str, float] = {}
         self._rec: list[tuple] = []
+        self._rec_map: list[tuple] = []  # record_map: tick 별 EM 전체 지도
         # leg odometry 스텝별 진단 (record_path 가 있을 때만):
         # t, dt, n_both, branch, vel(3), |acc|, foot_force_il(4), pos(3)
         self._odom_dbg: list[tuple] = []
@@ -433,6 +436,14 @@ class EmSidecar:
                               self.h_obs.copy(), self.valid_frac.copy(),
                               np.full(3, np.nan) if gt_base is None else gt_base.copy(),
                               np.full(3, np.nan) if est is None else np.asarray(est, float).copy()))
+            if self.cfg.record_map:
+                # EM 전체 지도 (영상·진단용). 레이어 규약은 vendored 백엔드 참조:
+                # [0] center z 상대 높이, [2] 직접 관측 여부, [5] 상한값, [6] 상한 여부.
+                # 인덱스 [ix, iy], ix = floor((x − cx)/res + n/2).
+                L = self._backend.layers()[0].detach().cpu().numpy()
+                c = self._backend.centers_t()[0].detach().cpu().numpy()
+                self._rec_map.append((L[0].astype(np.float16), (L[2] > 0.5),
+                                      L[5].astype(np.float16), (L[6] > 0.5), c.astype(np.float32)))
         if self._pub is not None:
             self._publish(stamp, base_pos)
         return self.h_obs
@@ -458,9 +469,24 @@ class EmSidecar:
             odom_source=np.array(self.cfg.odom_source + ("+shadow" if self.cfg.leg_shadow else "")),
             odom_dbg=np.array(list(self._odom_dbg), dtype=np.float64).reshape(-1, 15),
             lowstate_raw=np.array(list(self._raw_dbg), dtype=np.float64).reshape(-1, 28),
+            **self._map_arrays(len(rec)),
         )
         if self.cfg.verbose:
             print(f"[em] tick 기록 {len(rec)}개 → {self.cfg.record_path}", flush=True)
+
+    def _map_arrays(self, n: int) -> dict:
+        """record_map 이 켜져 있으면 tick 별 EM 지도 배열들 (길이 n 으로 맞춤)."""
+        if not self._rec_map:
+            return {}
+        m = list(self._rec_map)[:n]
+        return {
+            "em_elev": np.stack([r[0] for r in m]),        # (T,n,n) center z 상대 [m]
+            "em_valid": np.stack([r[1] for r in m]),       # (T,n,n) bool
+            "em_ub": np.stack([r[2] for r in m]),          # (T,n,n) 상한 [m]
+            "em_is_ub": np.stack([r[3] for r in m]),       # (T,n,n) bool
+            "em_center": np.stack([r[4] for r in m]),      # (T,3) odom frame
+            "em_res": np.array(self.cfg.em_resolution),
+        }
 
     # -- DDS -----------------------------------------------------------------
     def _publish(self, stamp: float, base_pos: np.ndarray) -> None:
