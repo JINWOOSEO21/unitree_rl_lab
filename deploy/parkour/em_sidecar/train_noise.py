@@ -56,6 +56,9 @@ class TrainNoiseCfg:
     odom_yaw_bias_range_dps: tuple = (0.01, 0.05)
     odom_yaw_walk_std_deg: float = 0.003
     odom_rp_std_deg: float = 0.5
+    # 실험용: 위치 scale bias 를 무작위(U(±max)) 대신 고정값으로 (예: −0.06 = 6 % 짧게).
+    # 추정기의 계통 편향을 흉내 내 "정책이 그 편향을 견디는가" 를 sport(GT) 지도에서 잰다.
+    odom_scale_bias_fixed: float | None = None
     seed: int | None = None
 
 
@@ -72,6 +75,8 @@ class TrainNoise:
         # 에피소드 상수 (실기 캘리브레이션 오차에 해당)
         self._pos_scale_bias = self.rng.uniform(-c.odom_scale_bias_max,
                                                 c.odom_scale_bias_max, size=3)
+        if c.odom_scale_bias_fixed is not None:
+            self._pos_scale_bias = np.full(3, float(c.odom_scale_bias_fixed))
         lo, hi = c.odom_yaw_bias_range_dps
         mag = self.rng.uniform(np.deg2rad(lo), np.deg2rad(hi))
         self._yaw_bias_rps = mag * (1.0 if self.rng.random() < 0.5 else -1.0)

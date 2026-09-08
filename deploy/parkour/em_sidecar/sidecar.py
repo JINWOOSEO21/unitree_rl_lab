@@ -30,7 +30,12 @@ self-filter 는 반대다. 실기 L1 도 자기 몸을 찍으므로 배포에서
 
 pose 출처
 ---------
-  위치   : rt/sportmodestate.position   (실기에서는 드리프트하는 odometry, 학습이 상정한 그것)
+  위치   : SidecarCfg.odom_source 로 고른다.
+             "sport" — rt/sportmodestate.position. MuJoCo 에서는 브리지가 주는 GT,
+                       실기에서는 sport 서비스 추정기. 저수준 제어 중 계속 온다는
+                       보장이 없다.
+             "leg"   — 다리 운동학 + IMU 로 직접 적분 (leg_odometry.py). lowstate
+                       만 있으면 된다. 실기 기본 후보.
   자세   : rt/lowstate.imu_state.quaternion
 sportmodestate 에도 imu_state 필드가 있지만 unitree_mujoco 브리지는 position/velocity
 만 채운다. 자세는 lowstate 쪽이 실기·시뮬레이터 양쪽에서 항상 차 있다.
@@ -111,6 +116,19 @@ class SidecarCfg:
     odom_offset_in_base: np.ndarray = field(
         default_factory=lambda: IMU_SITE_IN_BASE.copy()
     )
+    # base 위치 출처 — "sport" | "leg" (모듈 docstring 'pose 출처' 참조).
+    # leg 는 base **원점**을 직접 추정하므로 odom_offset_in_base 를 적용하지 않고,
+    # sportmodestate 가 오면 기록용 GT 로만 쓴다.
+    odom_source: str = "sport"
+    leg_odom: "LegOdomCfg | None" = None  # None 이면 leg_odometry.LegOdomCfg() 기본값
+    # 그림자 모드: 지도는 sport(GT) 로 만들되 leg 추정기를 옆에서 돌려 기록만 남긴다.
+    # 추정기가 틀리면 지도가 뒤틀려 로봇이 이상하게 걷고 그게 다시 추정을 망치는
+    # 되먹임이 있어, 추정기 자체의 성능은 정상 보행 위에서 따로 재야 한다.
+    leg_shadow: bool = False
+    # leg 의 시작 위치를 sportmodestate 첫 값에 맞춘다 — sim2sim 에서 GT 와 같은 프레임에
+    # 놓아 드리프트를 바로 비교하기 위해서다. 그 토픽이 없으면(실기 저수준 제어) 0 에서
+    # 시작하며, 지도는 상대 좌표라 문제없다.
+    leg_seed_from_sport: bool = True
     # tick 마다 (시각, base pose, scan, valid) 를 모아 npz 로 남긴다. 정지 상태
     # 게이트만으로는 **주행 중** 지도가 어긋나는지 알 수 없다 — 정책이 헛것을 보고
     # 반응하는지 판정하려면 자세와 함께 기록해야 한다.
@@ -120,6 +138,7 @@ class SidecarCfg:
     # 실기에서는 그 오차가 진짜로 생기므로 켜면 안 된다 — sim2sim 실험용이다.
     train_noise: bool = False
     train_noise_seed: int | None = None
+    train_noise_cfg: "TrainNoiseCfg | None" = None  # None 이면 학습값 그대로
     verbose: bool = True
 
 
@@ -130,7 +149,10 @@ class _Latest:
     lock: threading.Lock = field(default_factory=threading.Lock)
     q_sdk: np.ndarray | None = None
     quat: np.ndarray | None = None
-    pos: np.ndarray | None = None
+    pos: np.ndarray | None = None        # EM 이 쓸 위치 (sport 원시값 또는 leg 추정)
+    pos_sport: np.ndarray | None = None  # sportmodestate 원시값 (leg 모드에서 GT 기록용)
+    pos_est: np.ndarray | None = None    # leg 추정 (leg / shadow 모드, 기록용)
+    sport_stamp: float = float("nan")    # sportmodestate.stamp (브리지: sim 시각) — 정렬용
     n_low: int = 0
     n_sport: int = 0
 
@@ -154,13 +176,39 @@ class EmSidecar:
         self.n_ticks = 0
         self.last_stats: dict[str, float] = {}
         self._rec: list[tuple] = []
+        # leg odometry 스텝별 진단 (record_path 가 있을 때만):
+        # t, dt, n_both, branch, vel(3), |acc|, foot_force_il(4), pos(3)
+        self._odom_dbg: list[tuple] = []
+        self._raw_dbg: list[tuple] = []
+        self._est_for_record: np.ndarray | None = None
         self._last_stamp: float | None = None
         self._noise = None
         if cfg.train_noise:
             from .train_noise import TrainNoise, TrainNoiseCfg
-            self._noise = TrainNoise(TrainNoiseCfg(seed=cfg.train_noise_seed))
+            nc = cfg.train_noise_cfg or TrainNoiseCfg()
+            nc.seed = cfg.train_noise_seed
+            self._noise = TrainNoise(nc)
             if cfg.verbose:
-                print("[em] 학습과 같은 EM 입력 노이즈 켜짐 (실험용)", flush=True)
+                print(f"[em] EM 입력 노이즈 켜짐 (실험용): scale σ {np.sqrt(nc.odom_scale_var):.3f} "
+                      f"walk {nc.odom_pos_walk_std*100:.1f}cm bias "
+                      f"{'고정 %+.3f' % nc.odom_scale_bias_fixed if nc.odom_scale_bias_fixed is not None else '±%.3f' % nc.odom_scale_bias_max}",
+                      flush=True)
+
+        if cfg.odom_source not in ("sport", "leg"):
+            raise ValueError(f"odom_source 는 'sport' 또는 'leg': {cfg.odom_source!r}")
+        self._use_leg = cfg.odom_source == "leg"
+        self._odom = None
+        if self._use_leg or cfg.leg_shadow:
+            from .leg_odometry import LegOdomCfg, LegOdometry
+            self._odom = LegOdometry(self.kin, cfg.leg_odom or LegOdomCfg())
+            self.il_foot_to_sdk = _load_index(cfg.contract_dir / "deploy.yaml", "il_foot_to_sdk")
+            self._odom_seeded = not cfg.leg_seed_from_sport
+            self._odom_clock: str | None = None  # "tick" | "wall", 첫 lowstate 에서 정한다
+            if cfg.verbose:
+                c = self._odom.cfg
+                print(f"[em] leg odometry {'사용' if self._use_leg else '그림자(기록만)'} "
+                      f"(접촉 임계 {c.contact_force_thr} N, 발 반지름 {c.foot_radius*100:.2f} cm, "
+                      f"{'힘가중' if c.weight_by_force else '균등'})", flush=True)
 
         self._backend = None  # 지연 초기화 (cupy 컨텍스트를 첫 tick 에서 만든다)
         self._torch = None
@@ -195,22 +243,74 @@ class EmSidecar:
 
     # -- 콜백 ----------------------------------------------------------------
     def on_lowstate(self, msg) -> None:
+        # DDS 리더 스레드에서 예외가 나면 스레드만 조용히 죽고 증상은 "위치가 안 바뀐다"
+        # 로만 보인다 (예전에 지역 import 하나로 배치 세 번을 날렸다). 반드시 찍는다.
+        try:
+            self._on_lowstate(msg)
+        except Exception:
+            import traceback
+            print("[em] on_lowstate 예외 — 리더 스레드가 죽는다:", flush=True)
+            traceback.print_exc()
+            raise
+
+    def _on_lowstate(self, msg) -> None:
         q = np.array([msg.motor_state[i].q for i in range(12)], dtype=np.float64)
         quat = np.array(list(msg.imu_state.quaternion), dtype=np.float64)
+        pos = None
+        if self._odom is not None:
+            # 시각: lowstate.tick [ms] (브리지는 sim 시각, 실기는 MCU 시각). 0 이면 벽시계.
+            if self._odom_clock is None:
+                self._odom_clock = "tick" if int(msg.tick) > 0 else "wall"
+            t = int(msg.tick) * 1e-3 if self._odom_clock == "tick" else time.monotonic()
+            gyro = np.array(list(msg.imu_state.gyroscope), dtype=np.float64)
+            acc = np.array(list(msg.imu_state.accelerometer), dtype=np.float64)
+            ff_il = np.array(list(msg.foot_force), dtype=np.float64)[self.il_foot_to_sdk]
+            if self._odom_seeded:
+                pos = self._odom.step(t, q[self.il_to_sdk], quat, gyro, ff_il, acc).copy()
+                if self.cfg.record_path is not None:
+                    o = self._odom
+                    self._odom_dbg.append((t, o.last_dt, o.last_n_both, o.last_branch,
+                                           *o.vel, float(np.linalg.norm(acc)), *ff_il, *pos))
+                    # 원시 입력 스트림 — 오프라인 재생용 (tick, q_il 12, quat 4, gyro 3,
+                    # ff_il 4, sport 원시 위치 3, sport stamp). 라이브 반복 없이 추정기를
+                    # 결정론적으로 다시 돌려 볼 수 있다. sport 위치는 다른 스레드로 오므로
+                    # stamp 로 다시 정렬해야 한다.
+                    ps = self.latest.pos_sport
+                    self._raw_dbg.append((t, *q[self.il_to_sdk], *quat, *gyro, *ff_il,
+                                          *(np.full(3, np.nan) if ps is None else ps),
+                                          self.latest.sport_stamp))
         with self.latest.lock:
             self.latest.q_sdk = q
             self.latest.quat = quat
+            if pos is not None:
+                self.latest.pos_est = pos
+                if self._use_leg:
+                    self.latest.pos = pos
             self.latest.n_low += 1
 
     def on_sport(self, msg) -> None:
         pos = np.array(list(msg.position), dtype=np.float64)
         with self.latest.lock:
-            self.latest.pos = pos
+            self.latest.pos_sport = pos
+            self.latest.sport_stamp = float(msg.stamp.sec) + float(msg.stamp.nanosec) * 1e-9
             self.latest.n_sport += 1
+            if not self._use_leg:
+                self.latest.pos = pos
+            if self._odom is None:
+                return
+            elif not self._odom_seeded and self.latest.quat is not None:
+                # leg 시작점을 GT 프레임에 맞춘다 (imu site → base 원점 보정 포함)
+                seed = pos - quat_to_mat(self.latest.quat) @ self.cfg.odom_offset_in_base
+                self._odom.reset(seed)
+                self._odom_seeded = True
+                if self.cfg.verbose:
+                    print(f"[em] leg odometry 시작점을 sportmodestate 에 맞춤: {seed.round(3)}",
+                          flush=True)
 
     def on_cloud(self, msg) -> None:
         with self.latest.lock:
             q_sdk, quat, pos = self.latest.q_sdk, self.latest.quat, self.latest.pos
+            pos_sport, pos_est = self.latest.pos_sport, self.latest.pos_est
         if q_sdk is None or quat is None or pos is None:
             return  # 아직 상태가 안 왔다 — 이 프레임은 버린다
         n = int(msg.width)
@@ -218,7 +318,9 @@ class EmSidecar:
             return
         pts = np.frombuffer(bytes(msg.data), dtype=np.float32)[: n * 3].reshape(n, 3)
         self.tick(pts.astype(np.float64), q_sdk, quat, pos, float(msg.header.stamp.sec)
-                  + float(msg.header.stamp.nanosec) * 1e-9)
+                  + float(msg.header.stamp.nanosec) * 1e-9,
+                  gt_pos=pos_sport if self._odom is not None else None,
+                  est_pos=pos_est)
 
     # -- 본 처리 -------------------------------------------------------------
     def tick(
@@ -228,16 +330,26 @@ class EmSidecar:
         base_quat: np.ndarray,
         base_pos: np.ndarray,
         stamp: float = 0.0,
+        gt_pos: np.ndarray | None = None,
+        est_pos: np.ndarray | None = None,
     ) -> np.ndarray:
-        """점군 한 프레임 → scandots 132. 반환값은 h_obs (발행과 별개로 쓸 수 있다)."""
+        """점군 한 프레임 → scandots 132. 반환값은 h_obs (발행과 별개로 쓸 수 있다).
+
+        gt_pos : leg/그림자 모드에서 sportmodestate 원시 위치 (기록용 GT). 지도에는 안 쓴다.
+        est_pos: leg 추정 base 원점 (기록용). leg 모드에서는 base_pos 와 같다.
+        """
         self._ensure_backend()
         torch = self._torch
         dev = self.cfg.device
 
         q_il = q_sdk[self.il_to_sdk]
         R_base = quat_to_mat(base_quat)
-        # 받은 위치는 base 원점이 아니다 (IMU_SITE_IN_BASE 주석 참조) — 되돌린다.
-        base_pos = base_pos - R_base @ self.cfg.odom_offset_in_base
+        # sportmodestate 가 준 위치는 base 원점이 아니다 (IMU_SITE_IN_BASE 주석 참조) —
+        # 되돌린다. leg odometry 는 base 원점을 직접 추정하므로 그대로 쓴다.
+        if not self._use_leg:
+            base_pos = base_pos - R_base @ self.cfg.odom_offset_in_base
+        gt_base = None if gt_pos is None else gt_pos - R_base @ self.cfg.odom_offset_in_base
+        self._est_for_record = est_pos
 
         # 학습과 같은 EM 입력 노이즈 (실험용, train_noise.py 참조).
         # MuJoCo 는 라이다·odometry 가 GT 라 학습의 노이즈 항이 비어 있다. 정책은
@@ -316,8 +428,11 @@ class EmSidecar:
             # base_pos 는 이미 odom 보정을 거친 **base 원점**이다. 나중에 지형과
             # 대조할 때 이 값을 그대로 써야 한다 (raw sportmodestate 를 쓰면 4.2 cm
             # 틀린다 — 예전에 그 실수로 "지도 표류" 라는 잘못된 결론을 냈다).
+            est = self._est_for_record
             self._rec.append((float(stamp), base_pos.copy(), base_quat.copy(),
-                              self.h_obs.copy(), self.valid_frac.copy()))
+                              self.h_obs.copy(), self.valid_frac.copy(),
+                              np.full(3, np.nan) if gt_base is None else gt_base.copy(),
+                              np.full(3, np.nan) if est is None else np.asarray(est, float).copy()))
         if self._pub is not None:
             self._publish(stamp, base_pos)
         return self.h_obs
@@ -326,16 +441,26 @@ class EmSidecar:
         """기록해 둔 tick 들을 npz 로 떨군다 (record_path 가 있을 때만)."""
         if self.cfg.record_path is None or not self._rec:
             return
+        # 리더 스레드가 아직 tick 을 넣고 있을 수 있다 — 스냅샷을 떠서 키마다 길이가
+        # 같게 한다 (한 번 304/305 로 어긋나 분석 도구가 죽었다).
+        rec = list(self._rec)
         np.savez_compressed(
             self.cfg.record_path,
-            stamp=np.array([r[0] for r in self._rec], dtype=np.float64),
-            base_pos=np.stack([r[1] for r in self._rec]).astype(np.float32),
-            base_quat=np.stack([r[2] for r in self._rec]).astype(np.float32),
-            scan=np.stack([r[3] for r in self._rec]).astype(np.float32),
-            valid=np.stack([r[4] for r in self._rec]).astype(np.float32),
+            stamp=np.array([r[0] for r in rec], dtype=np.float64),
+            base_pos=np.stack([r[1] for r in rec]).astype(np.float32),
+            base_quat=np.stack([r[2] for r in rec]).astype(np.float32),
+            scan=np.stack([r[3] for r in rec]).astype(np.float32),
+            valid=np.stack([r[4] for r in rec]).astype(np.float32),
+            # leg odometry 모드에서만 채워진다 (sportmodestate 의 base 원점 위치). 그 외 NaN.
+            gt_pos=np.stack([r[5] for r in rec]).astype(np.float32),
+            # leg 추정 (leg / 그림자 모드). 그 외 NaN.
+            est_pos=np.stack([r[6] for r in rec]).astype(np.float32),
+            odom_source=np.array(self.cfg.odom_source + ("+shadow" if self.cfg.leg_shadow else "")),
+            odom_dbg=np.array(list(self._odom_dbg), dtype=np.float64).reshape(-1, 15),
+            lowstate_raw=np.array(list(self._raw_dbg), dtype=np.float64).reshape(-1, 28),
         )
         if self.cfg.verbose:
-            print(f"[em] tick 기록 {len(self._rec)}개 → {self.cfg.record_path}", flush=True)
+            print(f"[em] tick 기록 {len(rec)}개 → {self.cfg.record_path}", flush=True)
 
     # -- DDS -----------------------------------------------------------------
     def _publish(self, stamp: float, base_pos: np.ndarray) -> None:
@@ -420,11 +545,15 @@ class EmSidecar:
                 )
 
 
-def _load_sdk_to_il(deploy_yaml: Path) -> np.ndarray:
-    """SDK 모터 순서 → IsaacLab 관절 순서 색인. 계약 파일에서 읽는다(하드코딩 금지)."""
+def _load_index(deploy_yaml: Path, name: str) -> np.ndarray:
+    """계약 파일의 index_maps.<name> 을 읽는다 (하드코딩 금지)."""
     import yaml
 
     with open(deploy_yaml) as f:
         c = yaml.safe_load(f)
-    # il_to_sdk[i] = IsaacLab i 번 관절의 SDK 인덱스 → q_il = q_sdk[il_to_sdk]
-    return np.asarray(c["index_maps"]["il_to_sdk"], dtype=np.int64)
+    return np.asarray(c["index_maps"][name], dtype=np.int64)
+
+
+def _load_sdk_to_il(deploy_yaml: Path) -> np.ndarray:
+    """SDK 모터 순서 → IsaacLab 관절 순서 색인. il_to_sdk[i] = IL i 번 관절의 SDK 인덱스."""
+    return _load_index(deploy_yaml, "il_to_sdk")

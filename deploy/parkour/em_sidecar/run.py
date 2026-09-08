@@ -30,10 +30,44 @@ def main() -> int:
     p.add_argument("--duration", type=float, default=None, help="초 (미지정이면 무한)")
     p.add_argument("--train-noise", action="store_true",
                    help="학습과 같은 EM 입력 노이즈를 얹는다 (sim2sim 실험용).")
+    p.add_argument("--train-noise-odom-mult", type=float, default=1.0,
+                   help="odometry 노이즈(scale σ, walk, bias 범위) 배율 — 정책의 내성 측정용")
+    p.add_argument("--train-noise-scale-bias", type=float, default=None,
+                   help="odometry scale bias 를 고정값으로 (예: -0.06). 추정기 계통 편향 흉내")
     p.add_argument("--record", default=None,
                    help="tick 마다 (시각, base pose, scan, valid) 를 npz 로 남긴다. "
                         "주행 중에도 지도가 맞는지 지형과 대조하기 위한 것.")
+    p.add_argument("--odom", choices=["sport", "leg"], default="sport",
+                   help="base 위치 출처. sport=rt/sportmodestate, "
+                        "leg=다리 운동학+IMU 자체 적분 (실기 저수준 제어용 후보).")
+    p.add_argument("--leg-contact-thr", type=float, default=None, help="[N] leg 접촉 임계")
+    p.add_argument("--leg-foot-radius", type=float, default=None, help="[m] leg 발 구름 보정")
+    p.add_argument("--leg-no-seed", action="store_true",
+                   help="leg 시작점을 sportmodestate 에 맞추지 않고 0 에서 시작 (실기 조건)")
+    p.add_argument("--leg-shadow", action="store_true",
+                   help="지도는 sport 로 만들고 leg 추정기는 옆에서 기록만 (추정기 단독 평가)")
     a = p.parse_args()
+
+    leg_cfg = None
+    if a.odom == "leg" or a.leg_shadow:
+        from .leg_odometry import LegOdomCfg
+        leg_cfg = LegOdomCfg()
+        if a.leg_contact_thr is not None:
+            leg_cfg.contact_force_thr = a.leg_contact_thr
+        if a.leg_foot_radius is not None:
+            leg_cfg.foot_radius = a.leg_foot_radius
+
+    noise_cfg = None
+    if a.train_noise and (a.train_noise_odom_mult != 1.0 or a.train_noise_scale_bias is not None):
+        from .train_noise import TrainNoiseCfg
+        k = a.train_noise_odom_mult
+        d = TrainNoiseCfg()
+        noise_cfg = TrainNoiseCfg(
+            odom_scale_var=d.odom_scale_var * k * k,
+            odom_pos_walk_std=d.odom_pos_walk_std * k,
+            odom_scale_bias_max=d.odom_scale_bias_max * k,
+            odom_scale_bias_fixed=a.train_noise_scale_bias,
+        )
 
     cfg = SidecarCfg(
         contract_dir=Path(a.contract_dir),
@@ -44,6 +78,11 @@ def main() -> int:
         publish_topic=a.topic,
         record_path=Path(a.record) if a.record else None,
         train_noise=a.train_noise,
+        train_noise_cfg=noise_cfg,
+        odom_source=a.odom,
+        leg_odom=leg_cfg,
+        leg_seed_from_sport=not a.leg_no_seed,
+        leg_shadow=a.leg_shadow,
     )
     EmSidecar(cfg).run(duration=a.duration)
     return 0
