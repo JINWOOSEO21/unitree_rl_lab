@@ -17,6 +17,13 @@ sim 시각 기준으로 관절각·자세(lowstate_raw, 500 Hz)와 tick 별 scan
   오른쪽: estimated scandots — 사이드카가 실제로 발행한 obs[53:185] 그대로.
   두 패널 모두 값의 부호를 뒤집어 그린다 (−h_obs = 지형이 base 보다 높을수록 밝게).
   아래에 132 점 평균 |est − GT| 를 적는다. 정책 입력 밖의 지도는 그리지 않는다.
+
+odometry
+--------
+  기록의 base_pos 는 사이드카가 **지도에 쓴** base 위치다. sport(+shadow) 모드에서는 GT 이고
+  leg 모드에서는 leg odometry 추정치다. GT 패널은 진짜 위치의 지형이어야 하므로 leg 기록에서는
+  gt_pos(sportmodestate → base 원점) 로 샘플하고, 추정 패널 캡션에 odometry 오차(est − GT 의
+  xy 거리와 z)를 함께 적는다. 왼쪽 3D 렌더는 항상 sport 원시 위치(진짜 자세)를 쓴다.
 """
 from __future__ import annotations
 
@@ -170,9 +177,18 @@ def main() -> int:
     t_raw, q_il, quat, base = raw_streams(r)
     t_em = r["stamp"].astype(np.float64)
     scan_est = r["scan"].astype(np.float64)              # (T,132) 정책 입력 그대로
-    base_em = r["base_pos"].astype(np.float64)           # tick 시점 base 원점 (sport GT)
+    base_em = r["base_pos"].astype(np.float64)           # tick 시점 base 원점 (지도에 쓴 위치)
     quat_em = r["base_quat"].astype(np.float64)
-    n_em = min(len(t_em), len(scan_est), len(base_em), len(quat_em))
+    odom_src = str(r["odom_source"]) if "odom_source" in r.files else "sport"
+    leg_mode = odom_src.startswith("leg")
+    if leg_mode:
+        if "gt_pos" not in r.files or not np.isfinite(r["gt_pos"]).any():
+            raise SystemExit(f"{a.record}: leg 기록인데 gt_pos 가 없다 — GT 패널을 그릴 수 없다")
+        base_gt = r["gt_pos"].astype(np.float64)         # 진짜 base 원점 (GT 패널용)
+    else:
+        base_gt = base_em                                # sport 모드: 지도 위치가 곧 GT
+    n_em = min(len(t_em), len(scan_est), len(base_em), len(quat_em), len(base_gt))
+    print(f"odometry: {odom_src}" + ("  (GT 패널은 gt_pos, 캡션에 odometry 오차)" if leg_mode else ""))
 
     terr = Terrain(META)
     if spawn is not None:
@@ -217,14 +233,15 @@ def main() -> int:
         cam.lookat[:] = base[i] + np.array([0.0, 0.0, 0.05])
         renderer.update_scene(data, cam, opt)
         left = cv2.cvtColor(renderer.render(), cv2.COLOR_RGB2BGR)
-        cv2.putText(left, f"{a.scene}  t={tf - t0:5.2f}s  x={base[i, 0]:+.2f} z={base[i, 2]:.2f}",
+        cv2.putText(left, f"{a.scene}  odom={'leg' if leg_mode else 'GT'}  t={tf - t0:5.2f}s  "
+                          f"x={base[i, 0]:+.2f} z={base[i, 2]:.2f}",
                     (10, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        # --- scandots (tick 시점 base·yaw 로 사이드카와 같은 위치) ---
-        bz = base_em[j, 2]
+        # --- scandots (tick 시점 진짜 base·yaw 에서 GT 를 샘플. leg 모드면 gt_pos) ---
+        bz = base_gt[j, 2]
         yaw = yaw_from_quat(quat_em[j])
         cy_, sy_ = np.cos(yaw), np.sin(yaw)
-        px = base_em[j, 0] + cy_ * scan_xy[:, 0] - sy_ * scan_xy[:, 1]
-        py = base_em[j, 1] + sy_ * scan_xy[:, 0] + cy_ * scan_xy[:, 1]
+        px = base_gt[j, 0] + cy_ * scan_xy[:, 0] - sy_ * scan_xy[:, 1]
+        py = base_gt[j, 1] + sy_ * scan_xy[:, 0] + cy_ * scan_xy[:, 1]
         h_gt = terr.height(px, py) + zfix
         gt_obs = np.clip(bz - h_gt - HEIGHT_OFFSET, -1.0, 1.0)      # 학습 scan 식
         est_obs = scan_est[j]
@@ -233,8 +250,15 @@ def main() -> int:
         errs.append(err)
         gt_p = scan_panel(grid, -gt_obs, cell, a.vmin, a.vmax, "GT scandots (12x11)",
                           "terrain_meta @ same 132 pts, 0.15 m")
-        est_p = scan_panel(grid, -est_obs, cell, a.vmin, a.vmax, "estimated (EM sidecar)",
-                           f"policy obs[53:185]  |est-GT| {err * 100:.1f} cm")
+        if leg_mode:
+            d = base_em[j] - base_gt[j]
+            sub = (f"|est-GT| {err * 100:.1f} cm  odom err xy {np.hypot(d[0], d[1]) * 100:.0f} "
+                   f"z {d[2] * 100:+.0f} cm")
+            title = "estimated (EM, leg odom)"
+        else:
+            sub = f"policy obs[53:185]  |est-GT| {err * 100:.1f} cm"
+            title = "estimated (EM sidecar)"
+        est_p = scan_panel(grid, -est_obs, cell, a.vmin, a.vmax, title, sub)
         gap = np.full((a.height, 10, 3), 20, np.uint8)
         frame = np.concatenate([left, gap, fit_height(gt_p, a.height), gap, fit_height(est_p, a.height),
                                 gap, colorbar(a.height, a.vmin, a.vmax)], axis=1)
