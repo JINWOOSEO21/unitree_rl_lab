@@ -39,5 +39,5 @@
     "channel_size": 10,
     "num_hist": 10
   },
-  "note": "hist 는 과거 prop 프레임 num_hist 개를 [t-9 ... t] 순서로 이어붙인 것. prop 인덱스 6:8(delta_yaw)은 history 에 넣기 전에 0 으로 만든다."
+  "note": "hist 는 현재 prop(t)를 제외한 과거 num_hist 프레임 [t-10 ... t-1] 순서다. 추론 뒤 현재 prop을 push한다. prop 인덱스 6:8(delta_yaw)은 history 에 넣기 전에 0 으로 만든다. 배포 진입 시에는 최초 prop을 마스킹한 값 10개로 prime한다."
 }

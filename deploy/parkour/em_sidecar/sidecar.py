@@ -64,6 +64,7 @@ from pathlib import Path
 import numpy as np
 
 from .kinematics import Go2Kinematics, quat_to_mat, yaw_from_quat
+from .pointcloud import decode_xyz
 from .selffilter import capsule_self_hits
 
 # GO2_LIDAR_CFG (parkour_tasks/default_cfg.py) 의 마운트 — C++ 시뮬레이터
@@ -316,11 +317,15 @@ class EmSidecar:
             pos_sport, pos_est = self.latest.pos_sport, self.latest.pos_est
         if q_sdk is None or quat is None or pos is None:
             return  # 아직 상태가 안 왔다 — 이 프레임은 버린다
-        n = int(msg.width)
-        if n <= 0:
+        try:
+            pts = decode_xyz(msg)
+        except ValueError as error:
+            if self.cfg.verbose:
+                print(f"[em] 잘못된 PointCloud2 프레임 폐기: {error}", flush=True)
             return
-        pts = np.frombuffer(bytes(msg.data), dtype=np.float32)[: n * 3].reshape(n, 3)
-        self.tick(pts.astype(np.float64), q_sdk, quat, pos, float(msg.header.stamp.sec)
+        if pts.size == 0:
+            return
+        self.tick(pts, q_sdk, quat, pos, float(msg.header.stamp.sec)
                   + float(msg.header.stamp.nanosec) * 1e-9,
                   gt_pos=pos_sport if self._odom is not None else None,
                   est_pos=pos_est)

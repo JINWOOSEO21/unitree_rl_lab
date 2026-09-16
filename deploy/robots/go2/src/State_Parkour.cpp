@@ -97,6 +97,8 @@ State_Parkour::State_Parkour(int state_mode, std::string state_string)
         },
         FSMStringMap.right.at("Passive"));
 
+    add_keyboard_routes();
+
     spdlog::info("State_Parkour: policy={} scandots_timeout={}s contact_thr={}",
                  (dir / "policy.onnx").string(), scandots_timeout_s_, contact_threshold_);
 }
@@ -113,6 +115,7 @@ bool State_Parkour::bad_orientation(float limit_rad) const
 
 void State_Parkour::enter()
 {
+    if (go2_keyboard_control) go2_keyboard_control->set_state(Go2RuntimeState::Policy);
     // PD 게인은 계약(학습값 kp=40, kd=1)을 쓴다.
     for (int i = 0; i < kNumJoints; ++i) {
         const int sdk = contract_.il_to_sdk[i];
@@ -137,7 +140,7 @@ void State_Parkour::enter()
 
     if (scan_->count() == 0) {
         spdlog::warn("State_Parkour: scandots 를 아직 한 번도 못 받았다 "
-                     "(EM 사이드카가 떠 있는가?). 평지로 가정하고 시작한다.");
+                     "(EM 사이드카가 떠 있는가?). 유효한 지도가 올 때까지 추론하지 않는다.");
     }
 
     if (!log_path_.empty()) {
@@ -198,25 +201,31 @@ void State_Parkour::policy_step()
     // delta_yaw 는 학습에서 10 Hz 로만 갱신됐다. 같은 위상으로 맞춘다.
     const float yaw_now = yaw_from_quat(in.quat_w);
     auto* joy = &lowstate->joystick;
+    const auto keyboard_axes = go2_keyboard_control ? go2_keyboard_control->axes() : Go2KeyboardAxes{};
+    const float turn = go2_keyboard_control ? keyboard_axes.turn : joy->rx();
     if (step_count_ % static_cast<uint64_t>(contract_.em_tick_steps) == 0) {
-        heading_.update(joy->rx(), yaw_now, contract_.step_dt * contract_.em_tick_steps);
+        heading_.update(turn, yaw_now, contract_.step_dt * contract_.em_tick_steps);
     } else {
         heading_.set_yaw(yaw_now);
     }
     in.delta_yaw = heading_.delta_yaw();
     in.delta_next_yaw = heading_.delta_next_yaw();
-    const float ly = std::clamp(joy->ly(), 0.0f, 1.0f);
+    const float ly = go2_keyboard_control ? std::clamp(keyboard_axes.speed, 0.0f, 1.0f)
+                                          : std::clamp(joy->ly(), 0.0f, 1.0f);
     in.cmd_vx = cmd_vx_min_ + ly * (cmd_vx_max_ - cmd_vx_min_);
 
     for (int i = 0; i < kNumJoints; ++i) in.last_action[i] = act_->last_raw()[i];
 
     // --- 관측 조립 ---
+    std::vector<float> scan_values;
+    if (!scan_->get_if_fresh(scandots_timeout_s_, scan_values)) return;
+
     const auto prop = obs_->build_prop(in);
     if (!obs_->primed()) obs_->prime(prop);
 
     std::unordered_map<std::string, std::vector<float>> feed;
     feed["prop"] = prop;
-    feed["scan"] = scan_->get();
+    feed["scan"] = std::move(scan_values);
     feed["hist"] = obs_->history();
 
     // --- 정책 ---
@@ -254,6 +263,17 @@ void State_Parkour::policy_step()
 
     obs_->push(prop);
     ++step_count_;
+}
+
+void State_Parkour::add_keyboard_routes()
+{
+    auto check = [](Go2RuntimeState target) {
+        return [target] { return go2_keyboard_control && go2_keyboard_control->consume_transition(target); };
+    };
+    // These are appended after the orientation and scandot checks, so faults win.
+    registered_checks.emplace_back(check(Go2RuntimeState::Passive), FSMStringMap.right.at("Passive"));
+    registered_checks.emplace_back(check(Go2RuntimeState::Stand), FSMStringMap.right.at("FixStand"));
+    registered_checks.emplace_back(check(Go2RuntimeState::Policy), FSMStringMap.right.at("Parkour"));
 }
 
 void State_Parkour::run()

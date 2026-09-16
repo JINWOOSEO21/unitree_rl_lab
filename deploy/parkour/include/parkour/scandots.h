@@ -12,8 +12,10 @@
 // 계속 달린다. last_age() 로 나이를 재고, FSM 이 임계를 넘으면 Passive 로 떨어뜨린다.
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -36,7 +38,7 @@ public:
         sub_->InitChannel([this](const void* msg) { this->on_msg(msg); }, 1);
     }
 
-    /// 최신 scandots 사본. 아직 하나도 못 받았으면 전부 0 (= 평지 가정).
+    /// 최신 유효 scandots 사본. 아직 하나도 못 받았거나 invalidation 뒤면 전부 0.
     std::vector<float> get() const
     {
         std::lock_guard<std::mutex> lk(mtx_);
@@ -46,14 +48,26 @@ public:
     /// 마지막 수신으로부터 흐른 시간 [s]. 하나도 못 받았으면 매우 큰 값.
     double last_age() const
     {
-        if (n_recv_.load() == 0) return 1e9;
         std::lock_guard<std::mutex> lk(mtx_);
+        if (n_recv_.load() == 0) return 1e9;
         return std::chrono::duration<double>(Clock::now() - last_).count();
     }
 
+    /// 값과 신선도를 같은 lock 아래 확인한다. true일 때만 out이 최신 유효값으로 교체된다.
+    bool get_if_fresh(double max_age_s, std::vector<float>& out) const
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        if (n_recv_.load() == 0 ||
+            std::chrono::duration<double>(Clock::now() - last_).count() > max_age_s)
+            return false;
+        out = values_;
+        return true;
+    }
+
+    /// 마지막 invalidation 이후 받은 유효 메시지 수. invalidation 즉시 0으로 리셋된다.
     uint64_t count() const { return n_recv_.load(); }
 
-    /// 길이가 132 가 아닌 메시지를 받은 횟수 (계약 위반 진단용).
+    /// 크기, finite, [-1,1] 계약을 위반한 메시지의 누적 횟수.
     uint64_t bad_size_count() const { return n_bad_.load(); }
 
 private:
@@ -63,9 +77,16 @@ private:
     {
         const auto* m = static_cast<const unitree_go::msg::dds_::HeightMap_*>(message);
         const auto& d = m->data();
-        if (static_cast<int>(d.size()) != kNumScan) {
+        const bool valid = static_cast<int>(d.size()) == kNumScan &&
+            std::all_of(d.begin(), d.end(), [](float value) {
+                return std::isfinite(value) && value >= -1.0f && value <= 1.0f;
+            });
+        if (!valid) {
             n_bad_.fetch_add(1);
-            return;  // 조용히 무시하면 안 된다 — 카운터로 드러낸다
+            std::lock_guard<std::mutex> lk(mtx_);
+            std::fill(values_.begin(), values_.end(), 0.0f);
+            n_recv_.store(0);
+            return;
         }
         std::lock_guard<std::mutex> lk(mtx_);
         for (int i = 0; i < kNumScan; ++i) values_[i] = d[i];

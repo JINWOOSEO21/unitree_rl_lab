@@ -21,6 +21,7 @@
 #include <thread>
 
 #include "FSM/FSMState.h"
+#include "KeyboardControl.h"
 #include "isaaclab/algorithms/algorithms.h"
 #include "parkour/action.h"
 #include "parkour/contract.h"
@@ -43,6 +44,7 @@ private:
     void stop_thread();
     /// 몸이 뒤집혔는가 (projected gravity 의 z 성분으로 판정, 임계는 rad).
     bool bad_orientation(float limit_rad) const;
+    void add_keyboard_routes();
 
     parkour::Contract contract_;
     std::unique_ptr<parkour::ObservationBuilder> obs_;

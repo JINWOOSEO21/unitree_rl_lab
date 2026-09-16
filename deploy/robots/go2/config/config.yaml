@@ -2,8 +2,10 @@ FSM:
   _: # enabled fsms
     Passive:
       id: 1
+      type: Go2Passive
     FixStand:
       id: 2
+      type: Go2Pose
     # Velocity(State_RLBase)는 이 포크에서 꺼 둔다.
     # policy_dir 이 가리키는 logs/rsl_rl/unitree_go2_velocity 가 없어서 상태 초기화 중
     # std::filesystem_error 로 **프로세스가 죽는다**(FixStand 도 같이 못 쓰게 된다).
@@ -24,7 +26,6 @@ FSM:
   FixStand:
     transitions: 
       Passive: LT + B.on_pressed
-      Parkour: start.on_pressed
     kp: [60, 80, 80, 60, 80, 80, 60, 80, 80, 60, 80, 80]
     kd: [5, 4, 4, 5, 4, 4, 5, 4, 4, 5, 4, 4]
     ts: [0, 1, 2]
@@ -33,6 +34,8 @@ FSM:
       [0.0, 1.36, -2.65, 0.0, 1.36, -2.65, 0.0, 1.36, -2.65, 0.0, 1.36, -2.65],
       [0., 0.8, -1.5, 0., 0.8, -1.5, 0., 0.8, -1.5, 0., 0.8, -1.5],
     ]
+    pose_duration: 2.0
+    stand_tolerance: 0.2
   # Velocity:
   #   transitions:
   #     Passive: LT + B.on_pressed
@@ -73,4 +76,3 @@ FSM:
     # 관측 녹화 (비우면 끔). 폐루프에서만 드러나는 문제를 학습 분포와 대조하려면
     # 정책이 실제로 본 것을 남겨야 한다 — 골든 게이트는 녹화된 입력만 검증한다.
     log_obs: ""
-    
