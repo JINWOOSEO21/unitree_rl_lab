@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <memory>
+#include <limits>
 
 #include "FSM/FSMState.h"
 #include "KeyboardControl.h"
@@ -25,6 +26,9 @@ public:
         duration_s_ = cfg["pose_duration"] ? cfg["pose_duration"].as<double>() : 2.0;
         if (down_) duration_s_ = cfg["standdown_duration"] ? cfg["standdown_duration"].as<double>() : 3.0;
         stand_tolerance_ = cfg["stand_tolerance"] ? cfg["stand_tolerance"].as<float>() : 0.2f;
+        standdown_tolerance_ = cfg["standdown_tolerance"] ? cfg["standdown_tolerance"].as<float>() : 0.15f;
+        if (!std::isfinite(standdown_tolerance_) || standdown_tolerance_ <= 0)
+            throw std::runtime_error("Go2Pose standdown_tolerance must be finite and positive");
         if (target_.size() != 12 || kp_.size() != 12 || kd_.size() != 12)
             throw std::runtime_error("Go2Pose gain/target size mismatch");
         if (!std::isfinite(duration_s_) || duration_s_ <= 0 ||
@@ -81,9 +85,8 @@ public:
             std::lock_guard<std::mutex> lock(lowstate->mutex_);
             for (size_t i = 0; i < target_.size(); ++i) {
                 const auto& motor = lowstate->msg_.motor_state()[i];
-                settled = settled && std::isfinite(motor.q()) && std::isfinite(motor.dq()) &&
-                    std::abs(motor.q()-target_[i]) <= std::min(stand_tolerance_, 0.1f) &&
-                    std::abs(motor.dq()) <= 0.2f;
+                settled = settled && go2_down_joint_settled(
+                    motor.q(), target_[i], motor.dq(), standdown_tolerance_);
             }
             down_gate_.update(lowstate->msg_.tick(), settled);
         }
@@ -92,19 +95,49 @@ public:
 private:
     using Clock = std::chrono::steady_clock;
 
-    bool upright(float limit) const
+    float tilt_radians() const
     {
         std::lock_guard<std::mutex> lock(lowstate->mutex_);
         const auto& q = lowstate->msg_.imu_state().quaternion();
         if (!std::isfinite(q[0]) || !std::isfinite(q[1]) || !std::isfinite(q[2]) || !std::isfinite(q[3]))
-            return false;
+            return std::numeric_limits<float>::quiet_NaN();
         Eigen::Quaternionf quat(q[0], q[1], q[2], q[3]);
         const float norm = quat.norm();
-        if (!std::isfinite(norm) || norm < 1e-6f) return false;
+        if (!std::isfinite(norm) || norm < 1e-6f) return std::numeric_limits<float>::quiet_NaN();
         quat.normalize();
         const Eigen::Vector3f gravity = quat.conjugate() * Eigen::Vector3f(0, 0, -1);
         const float tilt = std::acos(std::clamp(-gravity.z(), -1.0f, 1.0f));
+        return tilt;
+    }
+
+    bool upright(float limit) const
+    {
+        const float tilt = tilt_radians();
         return std::isfinite(tilt) && tilt <= limit;
+    }
+
+    void log_down_rejection() const
+    {
+        const float tilt = tilt_radians();
+        std::lock_guard<std::mutex> lock(lowstate->mutex_);
+        size_t worst = 0, fastest = 0;
+        float error = -1, speed = -1;
+        bool finite = true;
+        for (size_t i = 0; i < target_.size(); ++i) {
+            const auto& motor = lowstate->msg_.motor_state()[i];
+            finite = finite && std::isfinite(motor.q()) && std::isfinite(motor.dq());
+            const float e = std::abs(motor.q()-target_[i]);
+            const float v = std::abs(motor.dq());
+            if (e > error) { error = e; worst = i; }
+            if (v > speed) { speed = v; fastest = i; }
+        }
+        spdlog::warn("StandDown rejected: complete={} dwell_500ms={} joints_finite={}; "
+                     "SDK joint[{}] q={:.4f} target={:.4f} error={:.4f}/{:.4f} rad; "
+                     "max |dq| joint[{}]={:.4f}/0.2000 rad/s; tilt={:.4f}/0.3000 rad. "
+                     "Wait for settled Stand, then press 3 again",
+                     complete_.load(), down_gate_.ready(), finite, worst,
+                     lowstate->msg_.motor_state()[worst].q(), target_[worst], error,
+                     standdown_tolerance_, fastest, speed, tilt);
     }
 
     Go2PolicyReadiness readiness() const
@@ -135,12 +168,12 @@ private:
                 if (policy_request || go2_keyboard_control->pending_request() == Go2StateRequest::StandDown)
                     ready = readiness();
                 if (go2_keyboard_control->pending_request() == Go2StateRequest::StandDown) {
-                    ready.stand_complete = ready.stand_complete && down_gate_.ready();
+                    ready.stand_complete = complete_.load() && down_gate_.ready();
                     ready.upright = upright(0.3f);
                     if (target == Go2RuntimeState::Passive && !down_ &&
                         !(ready.stand_complete && ready.upright)) {
                         if (go2_keyboard_control->consume_request(Go2StateRequest::StandDown))
-                            spdlog::warn("StandDown rejected: wait for settled upright Stand, then press 3 again");
+                            log_down_rejection();
                         return false;
                     }
                 }
@@ -186,6 +219,7 @@ private:
     double scan_timeout_s_ = 0.5;
     float bad_orientation_rad_ = 1.0f;
     float stand_tolerance_ = 0.2f;
+    float standdown_tolerance_ = 0.15f;
     std::vector<float> kp_, kd_, start_, target_;
     Clock::time_point began_{};
     std::atomic<bool> complete_{false};

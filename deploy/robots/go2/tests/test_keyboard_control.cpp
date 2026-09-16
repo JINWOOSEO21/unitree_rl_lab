@@ -101,6 +101,17 @@ void test_down_and_passive()
         assert(input.pending_request() == Go2StateRequest::Passive);
         assert(input.consume_transition(Go2RuntimeState::Passive));
     }
+    assert(!go2_down_joint_settled(-1.602f, -1.5f, .05f, .1f));
+    assert(go2_down_joint_settled(-1.602f, -1.5f, .05f, .15f));
+    assert(!go2_down_joint_settled(-1.66f, -1.5f, .05f, .15f));
+    assert(!go2_down_joint_settled(-1.602f, -1.5f, .21f, .15f));
+    assert(!go2_down_joint_settled(NAN, -1.5f, .05f, .15f));
+    assert(!go2_down_joint_settled(-1.602f, -1.5f, NAN, .15f));
+    assert(!go2_down_joint_settled(-1.602f, -1.5f, .05f, NAN));
+    Go2StandDownGate regression;
+    for (uint32_t t=0; t<=500; t+=2)
+        regression.update(t, go2_down_joint_settled(-1.602f,-1.5f,.05f,.15f));
+    assert(regression.ready());
     Go2StandDownGate gate;
     for (uint32_t tick=0; tick<500; tick+=2) { gate.update(tick,true); assert(!gate.ready()); }
     gate.update(500,true); assert(gate.ready());

@@ -404,7 +404,7 @@ SDK order `[0, 1.36, -2.65]` per leg. Duration is configurable with
 final down pose remains actively held. No automatic transition to Passive.
 
 Entry requires completed stand interpolation and 0.5 s of advancing LowState
-with joint error <= min(configured stand tolerance, 0.1 rad), tilt <= 0.3 rad,
+with joint error <= `standdown_tolerance` (0.15 rad), tilt <= 0.3 rad,
 and all |joint dq| <= 0.2 rad/s. Source gaps >100 ms reset this dwell. Scandots are not
 required. An early press is rejected, not queued: press 3 again once settled.
 From Policy press 1 (or space), wait for settled Stand, then press 3. From down,
@@ -423,3 +423,11 @@ excursion 1.923 mm), LowState 498.48 Hz, terrain 10.016 Hz. There were 100
 expected pre-calibration pose rejections and one cold map processing timeout;
 no subsequent map faults. IMU yaw changed -0.738 degrees, so orientation drift
 and walking accuracy remain open despite the improved stationary position.
+
+StandDown tolerance follow-up: measured SDK joint 11 settled near -1.602 rad
+against -1.500 rad target, exceeding the former 0.1 rad cap despite low speed
+and <1 degree tilt. Down entry now has its own 0.15 rad configurable tolerance;
+policy entry retains stand_tolerance. Rejection logs report worst joint q/target/
+error/limit, largest |dq|/limit, tilt/limit, finite status and dwell readiness.
+The running controller must be restarted to use this compiled change; never
+terminate or restart it automatically while it supports a standing robot.

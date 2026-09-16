@@ -38,6 +38,7 @@ FSM:
       [0., 0.8, -1.5, 0., 0.8, -1.5, 0., 0.8, -1.5, 0., 0.8, -1.5],
     ]
     standdown_duration: 3.0
+    standdown_tolerance: 0.15  # rad; separate from policy-entry stand_tolerance
     pose_duration: 2.0
     stand_tolerance: 0.2
   # Velocity:

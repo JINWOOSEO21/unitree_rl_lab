@@ -84,6 +84,13 @@ inline bool go2_scan_values_valid(const std::vector<float>& values)
     });
 }
 
+inline bool go2_down_joint_settled(float measured, float target, float velocity, float tolerance)
+{
+    return std::isfinite(measured) && std::isfinite(target) && std::isfinite(velocity) &&
+           std::isfinite(tolerance) && tolerance >= 0 &&
+           std::abs(measured-target) <= tolerance && std::abs(velocity) <= 0.2f;
+}
+
 // Only advancing source samples accrue the stationary dwell; gaps restart it.
 class Go2StandDownGate
 {
