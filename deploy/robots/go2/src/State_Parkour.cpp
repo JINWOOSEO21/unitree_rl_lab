@@ -203,7 +203,9 @@ void State_Parkour::policy_step()
     auto* joy = &lowstate->joystick;
     const auto keyboard_axes = go2_keyboard_control ? go2_keyboard_control->axes() : Go2KeyboardAxes{};
     const float turn = go2_keyboard_control ? keyboard_axes.turn : joy->rx();
-    if (step_count_ % static_cast<uint64_t>(contract_.em_tick_steps) == 0) {
+    if (go2_keyboard_control && keyboard_axes.relative_heading) {
+        heading_.set_relative(yaw_now, keyboard_axes.heading_offset);
+    } else if (step_count_ % static_cast<uint64_t>(contract_.em_tick_steps) == 0) {
         heading_.update(turn, yaw_now, contract_.step_dt * contract_.em_tick_steps);
     } else {
         heading_.set_yaw(yaw_now);

@@ -54,6 +54,14 @@ public:
         started_ = true;
     }
 
+    // Re-anchor every policy step: offset is relative to the current body yaw.
+    void set_relative(float yaw_now, float offset)
+    {
+        reset(yaw_now);
+        yaw_now_ = yaw_now;
+        target_yaw_ = wrap_to_pi(yaw_now + offset);
+    }
+
     /// EM tick(10 Hz)마다 호출. rx 는 조이스틱 오른쪽 스틱 x [-1, 1].
     /// 부호: rx > 0 이면 target_yaw 가 **감소**(시계방향 = 오른쪽)한다.
     /// 유니트리 조이스틱 규약(오른쪽 = +rx)과 월드 yaw(반시계 = +)를 맞춘 것이다.

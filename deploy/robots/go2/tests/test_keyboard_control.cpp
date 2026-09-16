@@ -1,4 +1,5 @@
 #include "KeyboardControl.h"
+#include "parkour/heading.h"
 
 #include <cassert>
 #include <cmath>
@@ -29,6 +30,51 @@ void test_axes_and_keys()
     assert(close(input.axes().turn, 1));
     for (int i = 0; i < 12; ++i) input.handle_key('s');
     assert(close(input.axes().speed, -1));
+}
+
+void test_held_heading()
+{
+    Go2KeyboardControl input;
+    input.set_heading_keys(true, false);
+    assert(!input.axes().relative_heading); // Ignore outside Policy.
+    input.set_state(Go2RuntimeState::Policy);
+    input.handle_key('w');
+    input.handle_key('q');
+    input.set_heading_keys(true, false);
+    auto axes = input.axes();
+    const float angle = 0.2617993878f;
+    assert(axes.relative_heading && close(axes.heading_offset, angle));
+    assert(close(axes.turn, 0) && close(axes.speed, .25f));
+    parkour::HeadingCommand heading;
+    for (float yaw : {0.0f, 1.0f, 3.1f, -3.1f}) {
+        for (int i = 0; i < 100; ++i) {
+            input.set_heading_keys(true, false);
+            heading.set_relative(yaw, input.axes().heading_offset);
+            assert(close(heading.delta_yaw(), angle * heading.kHeadingScale));
+        }
+        input.set_heading_keys(false, true);
+        heading.set_relative(yaw, input.axes().heading_offset);
+        assert(close(heading.delta_yaw(), -angle * heading.kHeadingScale));
+        input.set_heading_keys(false, false);
+        heading.set_relative(yaw, input.axes().heading_offset);
+        assert(close(heading.delta_yaw(), 0)); // Release follows new forward.
+    }
+    input.set_heading_keys(true, true);
+    assert(close(input.axes().heading_offset, 0));
+    input.set_heading_keys(true, false);
+    input.handle_key(' ');
+    assert(!input.axes().relative_heading);
+    assert(input.consume_transition(Go2RuntimeState::Stand));
+    input.set_heading_keys(true, false);
+    input.foreground_lost();
+    assert(close(input.axes().heading_offset, 0));
+    input.set_state(Go2RuntimeState::Stand);
+    input.set_state(Go2RuntimeState::Policy);
+    assert(!input.axes().relative_heading);
+    input.set_heading_keys(true, false);
+    input.set_heading_keys(false, false);
+    input.handle_key('e');
+    assert(!input.axes().relative_heading && close(input.axes().turn, .25f));
 }
 
 void test_requests_and_routing()
@@ -170,6 +216,7 @@ void test_pose_math()
 int main()
 {
     test_axes_and_keys();
+    test_held_heading();
     test_requests_and_routing();
     test_down_and_passive();
     test_foreground_loss();

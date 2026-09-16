@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include "KeyboardControl.h"
+#include "HeldHeadingInput.h"
 
 class Go2TerminalInput
 {
@@ -18,6 +19,8 @@ public:
     {
         if (!isatty(STDIN_FILENO))
             throw std::runtime_error("--keyboard requires an interactive terminal on stdin");
+        if (!held_heading_.available())
+            std::fputs("[keyboard] X11 unavailable: a/d hold steering disabled; use a local X11 terminal.\n", stderr);
         install_job_control_ignores();
         foreground_ = is_foreground();
         if (!foreground_)
@@ -40,6 +43,7 @@ public:
         const bool now_foreground = is_foreground();
         if (!now_foreground) {
             if (foreground_) control_.foreground_lost();
+            held_heading_.clear();
             foreground_ = false;
             restore();
             return;
@@ -57,13 +61,20 @@ public:
         char key = 0;
         const ssize_t count = ::read(STDIN_FILENO, &key, 1);
         if (count == 1) {
-            if (discard_escape_byte(static_cast<unsigned char>(key))) return;
-            control_.handle_key(key);
-            print_event(key);
+            if (!discard_escape_byte(static_cast<unsigned char>(key))) {
+                if (key == 'a' || key == 'd') held_heading_.arm();
+                if (key == ' ' || (key >= '0' && key <= '3')) held_heading_.clear();
+                control_.handle_key(key);
+                print_event(key);
+            }
         } else if (count < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
             control_.foreground_lost();
+            held_heading_.clear();
             restore();
         }
+        if (control_.state() != Go2RuntimeState::Policy) held_heading_.clear();
+        const auto held = held_heading_.poll();
+        control_.set_heading_keys(held.left, held.right);
     }
 
     static void print_help()
@@ -75,10 +86,11 @@ public:
             "  0: Passive (damping control; NOT a controlled descent)\n"
             "  3: StandDown from settled Stand over 3 s; hold down pose (1 to stand again)\n"
             "  w/s: sticky forward-speed command +/-0.25 (policy minimum remains configured)\n"
+            "  a/d: hold in Policy: current forward +/-15 deg; release: straight (X11)\n"
             "  q/e: sticky left/right turn command -/+0.25\n"
             "  space: reset speed/turn; while Policy, return to Stand over 2 s\n"
             "  h: show this help\n"
-            "  Lateral a/d and a backward command are not implemented for this policy.\n"
+            "  Lateral movement and a backward command are not implemented for this policy.\n"
             "  Keep this process in the terminal foreground; losing it returns Policy to Stand.");
     }
 
@@ -165,6 +177,7 @@ private:
     enum class EscapeState { None, Escape, Csi, Ss3 };
 
     Go2KeyboardControl& control_;
+    Go2HeldHeadingInput held_heading_;
     termios saved_{};
     bool raw_active_ = false;
     bool foreground_ = false;

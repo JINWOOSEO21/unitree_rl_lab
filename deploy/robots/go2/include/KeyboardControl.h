@@ -15,6 +15,8 @@ struct Go2KeyboardAxes
 {
     float speed = 0.0f;
     float turn = 0.0f;
+    bool relative_heading = false;
+    float heading_offset = 0.0f;
 };
 
 struct Go2PolicyReadiness
@@ -136,14 +138,27 @@ public:
         return axes_;
     }
 
+    // X11 supplies physical key state, including releases (terminal bytes cannot).
+    void set_heading_keys(bool left, bool right)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (state_ != Go2RuntimeState::Policy) return;
+        if (left || right) {
+            axes_.relative_heading = true;
+            axes_.turn = 0;
+        }
+        if (axes_.relative_heading)
+            axes_.heading_offset = (static_cast<int>(left) - static_cast<int>(right)) * 0.2617993878f;
+    }
+
     void handle_key(char key)
     {
         std::lock_guard<std::mutex> lock(mutex_);
         switch (key) {
         case 'w': axes_.speed = clamp_axis(axes_.speed + 0.25f); break;
         case 's': axes_.speed = clamp_axis(axes_.speed - 0.25f); break;
-        case 'q': axes_.turn = clamp_axis(axes_.turn - 0.25f); break;
-        case 'e': axes_.turn = clamp_axis(axes_.turn + 0.25f); break;
+        case 'q': axes_.relative_heading = false; axes_.heading_offset = 0; axes_.turn = clamp_axis(axes_.turn - 0.25f); break;
+        case 'e': axes_.relative_heading = false; axes_.heading_offset = 0; axes_.turn = clamp_axis(axes_.turn + 0.25f); break;
         case ' ':
             axes_ = {};
             if (state_ == Go2RuntimeState::Policy) request_ = Go2StateRequest::Stand;
