@@ -20,8 +20,10 @@ public:
         kp_ = cfg["kp"].as<std::vector<float>>();
         kd_ = cfg["kd"].as<std::vector<float>>();
         const auto poses = cfg["qs"].as<std::vector<std::vector<float>>>();
-        target_ = poses.back();
+        down_ = state_string == "StandDown";
+        target_ = down_ ? poses.at(1) : poses.back();
         duration_s_ = cfg["pose_duration"] ? cfg["pose_duration"].as<double>() : 2.0;
+        if (down_) duration_s_ = cfg["standdown_duration"] ? cfg["standdown_duration"].as<double>() : 3.0;
         stand_tolerance_ = cfg["stand_tolerance"] ? cfg["stand_tolerance"].as<float>() : 0.2f;
         if (target_.size() != 12 || kp_.size() != 12 || kd_.size() != 12)
             throw std::runtime_error("Go2Pose gain/target size mismatch");
@@ -45,8 +47,9 @@ public:
     void enter() override
     {
         if (go2_keyboard_control)
-            go2_keyboard_control->set_state(Go2RuntimeState::Stand);
+            go2_keyboard_control->set_state(down_ ? Go2RuntimeState::StandDown : Go2RuntimeState::Stand);
         complete_ = false;
+        down_gate_.reset();
         start_.resize(target_.size());
         {
             std::lock_guard<std::mutex> lock(lowstate->mutex_);
@@ -69,14 +72,27 @@ public:
     {
         const double elapsed = std::chrono::duration<double>(Clock::now() - began_).count();
         for (size_t i = 0; i < target_.size(); ++i)
-            lowcmd->msg_.motor_cmd()[i].q() = go2_pose_lerp(start_[i], target_[i], elapsed, duration_s_);
+            lowcmd->msg_.motor_cmd()[i].q() = down_
+                ? go2_pose_smooth(start_[i], target_[i], elapsed, duration_s_)
+                : go2_pose_lerp(start_[i], target_[i], elapsed, duration_s_);
         if (elapsed >= duration_s_) complete_ = true;
+        if (!down_) {
+            bool settled = complete_.load() && upright(0.3f);
+            std::lock_guard<std::mutex> lock(lowstate->mutex_);
+            for (size_t i = 0; i < target_.size(); ++i) {
+                const auto& motor = lowstate->msg_.motor_state()[i];
+                settled = settled && std::isfinite(motor.q()) && std::isfinite(motor.dq()) &&
+                    std::abs(motor.q()-target_[i]) <= std::min(stand_tolerance_, 0.1f) &&
+                    std::abs(motor.dq()) <= 0.2f;
+            }
+            down_gate_.update(lowstate->msg_.tick(), settled);
+        }
     }
 
 private:
     using Clock = std::chrono::steady_clock;
 
-    bool upright() const
+    bool upright(float limit) const
     {
         std::lock_guard<std::mutex> lock(lowstate->mutex_);
         const auto& q = lowstate->msg_.imu_state().quaternion();
@@ -88,7 +104,7 @@ private:
         quat.normalize();
         const Eigen::Vector3f gravity = quat.conjugate() * Eigen::Vector3f(0, 0, -1);
         const float tilt = std::acos(std::clamp(-gravity.z(), -1.0f, 1.0f));
-        return std::isfinite(tilt) && tilt <= bad_orientation_rad_;
+        return std::isfinite(tilt) && tilt <= limit;
     }
 
     Go2PolicyReadiness readiness() const
@@ -101,7 +117,7 @@ private:
         }
         result.stand_complete = complete_.load() &&
                                 go2_pose_within_tolerance(measured, target_, stand_tolerance_);
-        result.upright = upright();
+        result.upright = upright(bad_orientation_rad_);
         if (!scan_) return result;
         std::vector<float> values;
         if (!scan_->get_if_fresh(scan_timeout_s_, values)) return result;
@@ -116,8 +132,19 @@ private:
                 if (!go2_keyboard_control) return false;
                 Go2PolicyReadiness ready;
                 const bool policy_request = go2_keyboard_control->pending_request() == Go2StateRequest::Policy;
-                if (policy_request) {
+                if (policy_request || go2_keyboard_control->pending_request() == Go2StateRequest::StandDown)
                     ready = readiness();
+                if (go2_keyboard_control->pending_request() == Go2StateRequest::StandDown) {
+                    ready.stand_complete = ready.stand_complete && down_gate_.ready();
+                    ready.upright = upright(0.3f);
+                    if (target == Go2RuntimeState::Passive && !down_ &&
+                        !(ready.stand_complete && ready.upright)) {
+                        if (go2_keyboard_control->consume_request(Go2StateRequest::StandDown))
+                            spdlog::warn("StandDown rejected: wait for settled upright Stand, then press 3 again");
+                        return false;
+                    }
+                }
+                if (policy_request) {
                     if (target == Go2RuntimeState::Passive &&
                         !(ready.stand_complete && ready.scan_fresh_and_valid && ready.upright)) {
                         if (go2_keyboard_control->consume_request(Go2StateRequest::Policy)) {
@@ -135,9 +162,11 @@ private:
             };
         };
         registered_checks.emplace_back(check(Go2RuntimeState::Passive), FSMStringMap.right.at("Passive"));
+        registered_checks.emplace_back(check(Go2RuntimeState::StandDown), FSMStringMap.right.at("StandDown"));
         registered_checks.emplace_back(check(Go2RuntimeState::Stand), FSMStringMap.right.at("FixStand"));
         registered_checks.emplace_back(check(Go2RuntimeState::Policy), FSMStringMap.right.at("Parkour"));
         {
+            if (down_) return;  // Down must go through Stand before Policy, including joystick.
             unitree::common::dsl::Parser parser("start.on_pressed");
             auto ast = parser.Parse();
             auto joystick_policy = unitree::common::dsl::Compile(*ast);
@@ -151,6 +180,8 @@ private:
         }
     }
 
+    Go2StandDownGate down_gate_;
+    bool down_ = false;
     double duration_s_ = 2.0;
     double scan_timeout_s_ = 0.5;
     float bad_orientation_rad_ = 1.0f;

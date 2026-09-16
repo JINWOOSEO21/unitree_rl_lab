@@ -3,6 +3,9 @@ FSM:
     Passive:
       id: 1
       type: Go2Passive
+    StandDown:
+      id: 3
+      type: Go2Pose
     FixStand:
       id: 2
       type: Go2Pose
@@ -34,6 +37,7 @@ FSM:
       [0.0, 1.36, -2.65, 0.0, 1.36, -2.65, 0.0, 1.36, -2.65, 0.0, 1.36, -2.65],
       [0., 0.8, -1.5, 0., 0.8, -1.5, 0., 0.8, -1.5, 0., 0.8, -1.5],
     ]
+    standdown_duration: 3.0
     pose_duration: 2.0
     stand_tolerance: 0.2
   # Velocity:

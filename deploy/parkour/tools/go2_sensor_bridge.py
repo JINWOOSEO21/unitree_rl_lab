@@ -273,7 +273,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--interface')
     parser.add_argument('--domain', type=int, default=0)
-    parser.add_argument('--duration', type=float, default=30, help='Seconds; 0 runs until Ctrl+C')
+    parser.add_argument('--duration', type=float, default=0, help='Seconds; default 0 runs until Ctrl+C')
     parser.add_argument('--emcupy-root', type=Path,
                         default=Path.home()/'workspace/codes/Isaaclab_Parkour/elevation_mapping_cupy')
     parser.add_argument('--publish-scandots', action='store_true', help='Publish terrain DDS for go2_ctrl')
@@ -295,10 +295,16 @@ def main():
     counters = {'low':0, 'scan':0, 'fault':0, 'fatal':0}
     last_report = [0.0]
     last_reason = [None]
+    last_calibration = [None]
     def emit(event):
         with write_lock:
             if args.summary_only:
                 counters[event['kind']] += 1
+                pose = event.get('leg_odometry')
+                if pose is not None:
+                    last_calibration[0] = {key: pose[key] for key in
+                        ('gyro_calibrated', 'gyro_bias_rad_s', 'gyro_calibration_elapsed_s')
+                        if key in pose}
                 if event.get('reason'):
                     last_reason[0] = event['reason']
                 now = time.monotonic()
@@ -306,7 +312,8 @@ def main():
                     return
                 last_report[0] = now
                 event = dict(counters, last_event=event['kind'], last_fault=last_reason[0],
-                             dds_scandots=args.publish_scandots)
+                             dds_scandots=args.publish_scandots,
+                             leg_calibration=last_calibration[0])
             output.write(json.dumps(event, allow_nan=False, separators=(',', ':'))+'\n')
             output.flush()
     with redirect_stdout(sys.stderr):

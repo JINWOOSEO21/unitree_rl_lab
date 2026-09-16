@@ -72,27 +72,55 @@ void test_requests_and_routing()
     assert(input.consume_transition(Go2RuntimeState::Stand));
     input.set_state(Go2RuntimeState::Policy);
     input.handle_key('3');
+    assert(!input.consume_transition(Go2RuntimeState::StandDown));
     assert(!input.pending_request());
     input.set_state(Go2RuntimeState::Policy);
     input.handle_key('0');
     assert(input.consume_transition(Go2RuntimeState::Passive));
 }
 
-void test_removed_key_and_passive()
+void test_down_and_passive()
 {
-    for (auto state : {Go2RuntimeState::Passive, Go2RuntimeState::Stand, Go2RuntimeState::Policy}) {
-        Go2KeyboardControl input;
+    const Go2PolicyReadiness ready{true, false, true}; // No map needed.
+    assert(go2_route_request(Go2RuntimeState::Stand, Go2StateRequest::StandDown, ready) == Go2RuntimeState::StandDown);
+    assert(!go2_route_request(Go2RuntimeState::Stand, Go2StateRequest::StandDown));
+    assert(!go2_route_request(Go2RuntimeState::Stand, Go2StateRequest::StandDown, {true, true, false}));
+    assert(!go2_route_request(Go2RuntimeState::Policy, Go2StateRequest::StandDown, ready));
+    assert(!go2_route_request(Go2RuntimeState::Passive, Go2StateRequest::StandDown, ready));
+    assert(!go2_route_request(Go2RuntimeState::StandDown, Go2StateRequest::Policy, {true,true,true}));
+    assert(go2_route_request(Go2RuntimeState::StandDown, Go2StateRequest::Stand) == Go2RuntimeState::Stand);
+    Go2KeyboardControl input;
+    input.set_state(Go2RuntimeState::Stand);
+    input.handle_key('3');
+    assert(!input.consume_transition(Go2RuntimeState::Passive, ready));
+    assert(input.consume_transition(Go2RuntimeState::StandDown, ready));
+    for (auto state : {Go2RuntimeState::Stand, Go2RuntimeState::StandDown, Go2RuntimeState::Policy}) {
         input.set_state(state);
-        input.handle_key('w');
-        input.handle_key('3');
-        assert(!input.pending_request());
-        assert(input.state() == state);
-        assert(close(input.axes().speed, .25f));
         input.handle_key('0');
-        input.handle_key('3');  // An unassigned key must not overwrite Passive.
+        input.handle_key('3');
         assert(input.pending_request() == Go2StateRequest::Passive);
-        assert(input.consume_transition(Go2RuntimeState::Passive) == (state != Go2RuntimeState::Passive));
+        assert(input.consume_transition(Go2RuntimeState::Passive));
     }
+    Go2StandDownGate gate;
+    for (uint32_t tick=0; tick<500; tick+=2) { gate.update(tick,true); assert(!gate.ready()); }
+    gate.update(500,true); assert(gate.ready());
+    gate.update(502,false); assert(!gate.ready());
+    gate.update(504,true);
+    for (int i=0; i<1000; ++i) gate.update(504,true);
+    assert(!gate.ready());  // Repeated stale samples cannot complete dwell.
+    gate.update(700,true); assert(!gate.ready());  // Gap resets dwell.
+    gate.update(1,true); assert(!gate.ready());  // Clock regression resets.
+    gate.reset(); assert(!gate.ready());
+    float previous = .8f;
+    for (int i=0; i<=300; ++i) {
+        float q=go2_pose_smooth(.8f,1.36f,i*.01,3.0);
+        assert(q>=previous && q<=1.360001f);
+        previous=q;
+    }
+    assert(close(go2_pose_smooth(.8f,1.36f,0,3),.8f));
+    assert(close(go2_pose_smooth(.8f,1.36f,4,3),1.36f));
+    assert(close(go2_pose_smooth(.8f,1.36f,.001,3),.8f));
+    assert(close(go2_pose_smooth(.8f,1.36f,2.999,3),1.36f));
 }
 
 void test_foreground_loss()
@@ -132,7 +160,7 @@ int main()
 {
     test_axes_and_keys();
     test_requests_and_routing();
-    test_removed_key_and_passive();
+    test_down_and_passive();
     test_foreground_loss();
     test_pose_math();
     std::cout << "go2 keyboard tests passed\n";

@@ -35,6 +35,10 @@ add_executable(go2_keyboard_tests tests/test_keyboard_control.cpp)
 target_include_directories(go2_keyboard_tests PRIVATE include)
 target_compile_options(go2_keyboard_tests PRIVATE -UNDEBUG)
 add_test(NAME go2_keyboard_tests COMMAND go2_keyboard_tests)
+add_executable(go2_startup_handoff_tests tests/test_startup_handoff.cpp)
+target_include_directories(go2_startup_handoff_tests PRIVATE include)
+target_compile_options(go2_startup_handoff_tests PRIVATE -UNDEBUG)
+add_test(NAME go2_startup_handoff_tests COMMAND go2_startup_handoff_tests)
 add_test(
   NAME go2_keyboard_rejects_non_tty_before_dds
   COMMAND bash -c "printf x | '$<TARGET_FILE:go2_ctrl>' --keyboard-check >/dev/null 2>&1; test $? -eq 2"

@@ -2,13 +2,14 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <vector>
 
-enum class Go2RuntimeState { Passive, Stand, Policy };
-enum class Go2StateRequest { Passive, Stand, Policy };
+enum class Go2RuntimeState { Passive, Stand, Policy, StandDown };
+enum class Go2StateRequest { Passive, Stand, Policy, StandDown };
 
 struct Go2KeyboardAxes
 {
@@ -31,10 +32,16 @@ inline std::optional<Go2RuntimeState> go2_route_request(
         if (request == Go2StateRequest::Stand) return Go2RuntimeState::Stand;
         break;
     case Go2RuntimeState::Stand:
+        if (request == Go2StateRequest::StandDown && ready.stand_complete && ready.upright)
+            return Go2RuntimeState::StandDown;
         if (request == Go2StateRequest::Passive) return Go2RuntimeState::Passive;
         if (request == Go2StateRequest::Policy && ready.stand_complete &&
             ready.scan_fresh_and_valid && ready.upright)
             return Go2RuntimeState::Policy;
+        break;
+    case Go2RuntimeState::StandDown:
+        if (request == Go2StateRequest::Passive) return Go2RuntimeState::Passive;
+        if (request == Go2StateRequest::Stand) return Go2RuntimeState::Stand;
         break;
     case Go2RuntimeState::Policy:
         if (request == Go2StateRequest::Passive) return Go2RuntimeState::Passive;
@@ -48,6 +55,14 @@ inline float go2_pose_lerp(float measured, float target, double elapsed_s, doubl
 {
     const float alpha = static_cast<float>(std::clamp(elapsed_s / duration_s, 0.0, 1.0));
     return measured + alpha * (target - measured);
+}
+
+// Quintic blend: zero target velocity and acceleration at both endpoints.
+inline float go2_pose_smooth(float measured, float target, double elapsed_s, double duration_s)
+{
+    const double t = std::clamp(elapsed_s / duration_s, 0.0, 1.0);
+    const double alpha = t*t*t*(10.0 + t*(-15.0 + 6.0*t));
+    return measured + static_cast<float>(alpha) * (target-measured);
 }
 
 inline bool go2_pose_within_tolerance(const std::vector<float>& measured,
@@ -68,6 +83,28 @@ inline bool go2_scan_values_valid(const std::vector<float>& values)
         return std::isfinite(value) && value >= -1.0f && value <= 1.0f;
     });
 }
+
+// Only advancing source samples accrue the stationary dwell; gaps restart it.
+class Go2StandDownGate
+{
+public:
+    void reset() { first_.reset(); last_.reset(); ready_ = false; }
+    void update(uint32_t tick, bool settled)
+    {
+        if (!settled || (last_ && (tick < *last_ || tick-*last_ > 100))) {
+            first_.reset(); ready_ = false;
+        }
+        if (settled && (!last_ || tick != *last_)) {
+            if (!first_) first_ = tick;
+            ready_ = tick >= *first_ && tick-*first_ >= 500;
+        }
+        last_ = tick;
+    }
+    bool ready() const { return ready_; }
+private:
+    std::optional<uint32_t> first_, last_;
+    bool ready_ = false;
+};
 
 class Go2KeyboardControl
 {
@@ -107,6 +144,9 @@ public:
         case '0': request_ = Go2StateRequest::Passive; break;
         case '1': request_ = Go2StateRequest::Stand; break;
         case '2': request_ = Go2StateRequest::Policy; break;
+        case '3':
+            if (request_ != Go2StateRequest::Passive) request_ = Go2StateRequest::StandDown;
+            break;
         default: break;
         }
     }

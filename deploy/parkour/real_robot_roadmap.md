@@ -3,7 +3,27 @@
 작성일: 2026-09-15. 목표는 PC에서 ONNX 정책을 실행하고 실제 Go2와 DDS로
 상태/명령을 주고받는 것이다. Jetson에 정책을 배포하는 작업은 현재 범위가 아니다.
 
-## 최신 상태: sport 해제, 원시 점군 + leg odometry 연결
+## 2026-09-16 재부팅 후 수신 전용 확인
+
+- 실제 `CheckMode()` 응답: code 0, form `0`, name `mcf` (활성 controller).
+  첫 조회 시 이미 기립 상태였다. 이번 관측으로 부팅 직후~기립 전의 mode 전환
+  시점까지 확인한 것은 아니다. StandDown/ReleaseMode/LowCmd는 실행하지 않았다.
+- LowState 약 500Hz, 배터리 SOC 원시값 66, 전압 약 29.85V.
+  기립 상태 foot_force 범위 SDK 순서: [39..40, 41..42, 42..43, 42].
+- bridge 수신 전용 60초 처리에서 정상 scan 597개. 첫 GPU 계산 272ms로 인한
+  `cloud_too_old_after_mapping` 1회는 거절·지도 초기화되었다.
+  시작 후 10초를 제외한 출력률 9.9987Hz, 간격 p50 100.03ms / p95 112.44ms /
+  max 131.54ms, 150ms 초과 간격 0회. 모든 scan 값은 finite 및 [-1,1] 범위였다.
+- 단, 정지 중 leg 위치 변화는 [-0.1251, +0.1575, -0.00568]m로 수평 약 20.1cm다.
+  측정 관절각 최대 변화는 0.00076rad였다. scan 셀별 전체 시간 범위의 p95는
+  정규화 높이 0.3274로, 10Hz 출력률 통과를 지형 정확도/안정성 통과로 볼 수 없다.
+  근거: 로컬 `captures/live_standing_map_20260916/summary.json`, `events.jsonl`.
+- Jetson 부팅 로그에서 maum_ral_ros/maum_ral_sio가 자동 시작하고 네트워크 초기화
+  실패 후 재시작하여 부팅 약 19.8초에 SportClient ready가 된 것을 확인했다.
+  읽은 로그에는 자동 기립을 일으킨 구체적인 명령 출처가 드러나지 않았다.
+  서비스 변경이나 원격 파일 수정은 하지 않았다.
+
+## 2026-09-15 기록: sport 해제, 원시 점군 + leg odometry 연결
 
 - 사용자가 SDK StandDown 후 엎드림을 확인한 뒤 ReleaseMode를 실행했다.
   반환 코드 0, CheckMode name 빈 문자열을 해제 직후와 15초 측정 종료 시 확인했다.
@@ -92,8 +112,34 @@ cd /home/seo-jinwoo/workspace/codes/unitree_rl_lab/deploy/robots/go2/build
 ```
 
 실제 제어 실행 형식은 `./go2_ctrl --network enp42s0 --keyboard`다. 이 실행은
-LowCmd를 발행하고 시작 시 기존 컨트롤러 해제를 시도할 수 있다. 이번 구현/검증에서는
-실행하지 않았다. Ctrl+C는 프로세스 종료이며 자세 전환 명령이 아니다.
+다음 시작 절차를 통과한 뒤 LowCmd를 생성한다.
+
+1. `CheckMode()` 성공 여부와 활성 controller를 확인한다.
+2. 활성 mode가 있으면 `StandDown()`을 호출하고 반환 코드 0을 요구한다.
+3. 새 LowState에서 엎드림 목표 관절각, 낮은 관절속도, 정상 IMU 자세가
+   0.5초 유지되는지 확인한다. 엎드림 대기 시간은 약 15초로 제한한다.
+4. mode 재조회 및 현재 자세 재확인 후 `ReleaseMode()`를 호출한다.
+5. mode 비활성, 다른 LowCmd 스트림 중단, 최신 엎드림 자세를 확인한다.
+6. 자체 LowCmd와 Passive FSM을 시작한다. 키보드 `1`/`2`는 그 이후 사용한다.
+
+관절 허용 오차는 hip 0.50rad, thigh/calf 0.25rad, 관절속도는 0.20rad/s,
+IMU 기울기는 0.60rad 이하다. 기존 실측 엎드림의 뒷다리 hip 벌어짐 약 0.38rad를
+허용하면서 기립의 thigh/calf 각도와는 구분한다. 이는 센서 기반 관절 자세 판정이며
+몸통이 실제 바닥에 지지되었음을 직접 측정하는 것은 아니다.
+조회/RPC 오류, 자세 확인 실패, 센서 정지, 취소, 제어 mode 변경/재활성화,
+다른 LowCmd 잔존 시 자체 모터 publisher 생성 전에 종료한다.
+처음부터 mode가 비활성이어도 엎드림 확인은 수행한다.
+
+이번 구현/검증에서는 실제 controller를 실행하지 않았으므로 자동 StandDown 및
+ReleaseMode의 실제 로봇 동작 검증은 남아 있다. Ctrl+C는 프로그램 종료이며
+자세 전환 명령이 아니다. `3`번 LieDown 상태를 다시 추가한 변경도 아니다.
+시작 절차를 포함한 CTest 4/4와 C++ 빌드가 통과했다. 실제 과거 엎드림 관절값은
+판정을 통과하고 기립/기울어진 자세, RPC 실패, 센서 정지/역행, 제어 주체 변경,
+재활성화, 경쟁 LowCmd 및 취소는 모의 입력 테스트에서 거부되는 것을 확인했다.
+
+MotionSwitcher 서비스가 없는 MuJoCo는 명시적으로
+`./go2_ctrl --network lo --sim --keyboard`를 사용한다. `--sim`은 loopback `lo`에서만
+허용되며 실제 로봇 인터페이스에서는 DDS 초기화 전에 거부된다.
 
 ### raw + leg 지도 → 컨트롤러 DDS 연결
 
@@ -104,6 +150,9 @@ x-fast 순서는 기존 정책 계약을 따른다. 옵션을 생략하면 기�
 shadow 정책 실행에도 DDS 발행이 자동으로 추가되지 않는다.
 
 터미널 1 — 센서 수신·지도 발행(모터 명령 없음):
+
+bridge의 `--duration` 기본값은 0(시간 제한 없음)이다. 수신 점검을 일정 시간만
+진행하려면 `--duration 60`처럼 지정한다. shadow runner는 별도의 기본 30초를 유지한다.
 
 ```bash
 cd /home/seo-jinwoo/workspace/codes/unitree_rl_lab/deploy/parkour
@@ -300,3 +349,77 @@ SSH 종료나 Ethernet 분리는 로봇 전원을 끄지 않는다. Jetson의 OS
 실행하지 않는다.
 
 상세 이전 조사: [hardware_check_2026-09-15.md](hardware_check_2026-09-15.md).
+
+### 2026-09-16: leg odometry startup gyro calibration
+
+`go2_sensor_bridge.py --odom leg` now waits for a 10 s stationary calibration
+window before publishing valid leg poses/terrain. Keep the robot supported and
+stationary with all four feet loaded during initialization. A bridge restart
+requires calibration again. This is sensor processing only; it sends no sport or
+motor commands. Policy startup must wait for valid scandots as before.
+
+The window requires all raw foot forces above the configured threshold, joint
+excursion <= 0.005 rad, quaternion angular distance from the window start <=
+0.01 rad, per-axis |gyro| <= 0.1 rad/s, and gyro standard deviation <= 0.025
+rad/s. These are initial deployment thresholds, not a hardware-calibrated proof
+of rest. Motion/contact loss restarts the window. Time-weighted gyro mean is
+subtracted only in the leg pose adapter; LowState sent to the policy and the
+shared simulation estimator are unchanged. Once calibrated, bias remains fixed
+so subsequent real rotations are preserved. No automatic bias relearning during
+walking, zero-velocity constraint, or gyro replacement is introduced.
+
+`--summary-only` includes `leg_calibration`: `gyro_calibrated`,
+`gyro_bias_rad_s`, and `gyro_calibration_elapsed_s` (0 after completion).
+If calibration does not finish, inspect contact and sensor stability; maps stay
+invalid rather than using an uncalibrated position. Gyro/attitude inconsistency
+is evidenced by the saved static record, but firmware preprocessing, sensor
+frame alignment, and timestamp latency still need independent verification.
+Coherent foot sliding, very slow rotation below the gate, or a frozen/incorrect
+quaternion cannot be excluded by these gates. Bias temperature drift and moving
+accuracy remain unvalidated.
+
+Offline reproduction (no robot/DDS):
+
+```bash
+cd /home/seo-jinwoo/workspace/codes/unitree_rl_lab/deploy/parkour
+/home/seo-jinwoo/miniconda3/envs/env_sim2real/bin/python tools/check_go2_gyro_replay.py captures/live_standing_map_20260916/events.jsonl
+```
+
+On this stationary saved subset, ready at 10.093 s, evaluation 49.867 s:
+uncorrected replay horizontal displacement 16.257 cm; corrected replay 1.671 cm.
+Both are the same replay interval, not the full live 500 Hz stream. Earlier
+1.28 cm was a counterfactual correction of the logged live trajectory; it was
+not the result of replaying the implemented estimator. Unit tests cover bias
+removal, preserving real angular velocity, contact/joint motion restarting the
+window, sustained-turn rejection, quaternion sign invariance, and vibration.
+
+### Keyboard 3: controlled low-level StandDown
+
+`3` now requests a separate `StandDown` FSM state from settled `FixStand` only.
+This uses SDK2 LowCmd joint targets, not SportClient.StandDown; sport mode remains
+released. The controller captures current measured joint positions and uses a
+3 s quintic blend (zero endpoint velocity/acceleration) to `FixStand.qs[1]`:
+SDK order `[0, 1.36, -2.65]` per leg. Duration is configurable with
+`FSM.FixStand.standdown_duration`. Existing stand gains are retained, and the
+final down pose remains actively held. No automatic transition to Passive.
+
+Entry requires completed stand interpolation and 0.5 s of advancing LowState
+with joint error <= min(configured stand tolerance, 0.1 rad), tilt <= 0.3 rad,
+and all |joint dq| <= 0.2 rad/s. Source gaps >100 ms reset this dwell. Scandots are not
+required. An early press is rejected, not queued: press 3 again once settled.
+From Policy press 1 (or space), wait for settled Stand, then press 3. From down,
+1 stands again; 2 cannot enter Policy directly. Repeated 3 does not restart the
+motion. 0 remains immediate damping-only Passive and interrupts the descent;
+it is not a controlled lowering command. DDS timeout retains the existing
+Passive fallback. These software checks do not prove ground support or physical
+stability; the new motion has not yet been exercised on hardware.
+
+Verification: C++ build, routing/interpolation regression tests, terminal input
+PTY tests. No controller execution against the robot during implementation.
+
+Live gyro follow-up: `captures/gyro_live_20260916T131641/summary.json` records
+10.024 s calibration, then 60 s horizontal displacement 1.682 mm (maximum
+excursion 1.923 mm), LowState 498.48 Hz, terrain 10.016 Hz. There were 100
+expected pre-calibration pose rejections and one cold map processing timeout;
+no subsequent map faults. IMU yaw changed -0.738 degrees, so orientation drift
+and walking accuracy remain open despite the improved stationary position.
