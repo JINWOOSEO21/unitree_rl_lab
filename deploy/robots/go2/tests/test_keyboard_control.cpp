@@ -12,24 +12,64 @@ bool close(float a, float b) { return std::abs(a - b) < 1e-6f; }
 void test_axes_and_keys()
 {
     Go2KeyboardControl input;
-    input.handle_key('w');
-    input.handle_key('w');
+    input.handle_key('i');
+    input.handle_key('i');
     input.handle_key('q');
     assert(close(input.axes().speed, .5f));
-    assert(close(input.axes().turn, -.25f));
+    assert(close(input.axes().heading_offset, 0.1745329252f));
     input.handle_key('a');
     input.handle_key('d');
     assert(close(input.axes().speed, .5f));
-    assert(close(input.axes().turn, -.25f));
+    assert(close(input.axes().heading_offset, 0.1745329252f));
     input.handle_key(' ');
     assert(close(input.axes().speed, 0));
     assert(close(input.axes().turn, 0));
     assert(!input.pending_request());
 
     for (int i = 0; i < 8; ++i) input.handle_key('e');
-    assert(close(input.axes().turn, 1));
-    for (int i = 0; i < 12; ++i) input.handle_key('s');
+    assert(close(input.axes().heading_offset, -8 * 0.1745329252f));
+    for (int i = 0; i < 12; ++i) input.handle_key('k');
     assert(close(input.axes().speed, -1));
+}
+
+void test_heading_steps()
+{
+    Go2KeyboardControl input;
+    input.set_state(Go2RuntimeState::Policy);
+    const float step = 0.1745329252f;
+    input.handle_key('q');
+    input.handle_key('q');
+    input.handle_key('e');
+    parkour::HeadingCommand heading;
+    for (int i = 0; i < 100; ++i) {
+        input.set_heading_keys(false, false); // Idle X11 poll must not erase q/e.
+        assert(close(input.axes().heading_offset, step));
+        heading.set_relative(i * .05f, input.axes().heading_offset);
+        assert(close(heading.delta_yaw(), step * heading.kHeadingScale));
+    }
+    input.handle_key('e');
+    assert(close(input.axes().heading_offset, 0));
+    for (int i = 0; i < 19; ++i) input.handle_key('q');
+    assert(std::abs(input.axes().heading_offset + 17 * step) < 1e-5f);
+    input.handle_key('i');
+    input.handle_key('w');
+    assert(input.axes().relative_heading && close(input.axes().heading_offset, 0));
+    assert(close(input.axes().speed, .25f));
+    assert(input.state() == Go2RuntimeState::Policy && !input.pending_request());
+    input.handle_key('s'); // Old speed-down binding is inactive.
+    assert(close(input.axes().speed, .25f));
+    input.handle_key('k');
+    assert(close(input.axes().speed, 0));
+    input.handle_key('w'); // Repeated reset stays at zero.
+    input.set_heading_keys(false, false);
+    assert(close(input.axes().heading_offset, 0));
+    input.set_heading_keys(true, false);
+    assert(close(input.axes().heading_offset, 0.2617993878f));
+    input.set_heading_keys(false, false);
+    assert(close(input.axes().heading_offset, 0));
+    input.handle_key('q');
+    input.set_state(Go2RuntimeState::Stand);
+    assert(close(input.axes().heading_offset, 0));
 }
 
 void test_held_heading()
@@ -38,7 +78,7 @@ void test_held_heading()
     input.set_heading_keys(true, false);
     assert(!input.axes().relative_heading); // Ignore outside Policy.
     input.set_state(Go2RuntimeState::Policy);
-    input.handle_key('w');
+    input.handle_key('i');
     input.handle_key('q');
     input.set_heading_keys(true, false);
     auto axes = input.axes();
@@ -74,7 +114,7 @@ void test_held_heading()
     input.set_heading_keys(true, false);
     input.set_heading_keys(false, false);
     input.handle_key('e');
-    assert(!input.axes().relative_heading && close(input.axes().turn, .25f));
+    assert(input.axes().relative_heading && close(input.axes().heading_offset, -0.1745329252f));
 }
 
 void test_requests_and_routing()
@@ -108,12 +148,12 @@ void test_requests_and_routing()
 
     input.set_state(Go2RuntimeState::Policy);
     input.handle_key('e');
-    input.handle_key('w');
+    input.handle_key('i');
     input.set_state(Go2RuntimeState::Stand);
     assert(close(input.axes().speed, 0));
     assert(close(input.axes().turn, 0));
     input.set_state(Go2RuntimeState::Policy);
-    input.handle_key('w');
+    input.handle_key('i');
     input.handle_key(' ');
     assert(input.consume_transition(Go2RuntimeState::Stand));
     input.set_state(Go2RuntimeState::Policy);
@@ -187,7 +227,7 @@ void test_foreground_loss()
     input.foreground_lost();
     assert(!input.pending_request());
     input.set_state(Go2RuntimeState::Policy);
-    input.handle_key('w');
+    input.handle_key('i');
     input.foreground_lost();
     assert(close(input.axes().speed, 0));
     assert(input.consume_transition(Go2RuntimeState::Stand));
@@ -216,6 +256,7 @@ void test_pose_math()
 int main()
 {
     test_axes_and_keys();
+    test_heading_steps();
     test_held_heading();
     test_requests_and_routing();
     test_down_and_passive();

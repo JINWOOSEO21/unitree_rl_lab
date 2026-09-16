@@ -63,7 +63,7 @@ public:
         if (count == 1) {
             if (!discard_escape_byte(static_cast<unsigned char>(key))) {
                 if (key == 'a' || key == 'd') held_heading_.arm();
-                if (key == ' ' || (key >= '0' && key <= '3')) held_heading_.clear();
+                if (key == 'w' || key == ' ' || (key >= '0' && key <= '3')) held_heading_.clear();
                 control_.handle_key(key);
                 print_event(key);
             }
@@ -85,9 +85,10 @@ public:
             "  2: enter policy only after stand completes and fresh valid scandots arrive\n"
             "  0: Passive (damping control; NOT a controlled descent)\n"
             "  3: StandDown from settled Stand over 3 s; hold down pose (1 to stand again)\n"
-            "  w/s: sticky forward-speed command +/-0.25 (policy minimum remains configured)\n"
+            "  i/k: sticky forward-speed command +/-0.25 (policy minimum remains configured)\n"
             "  a/d: hold in Policy: current forward +/-15 deg; release: straight (X11)\n"
-            "  q/e: sticky left/right turn command -/+0.25\n"
+            "  w: reset base-relative target heading to 0 deg; keep speed and mode\n"
+            "  q/e: base-relative target left/right 10 deg per key; print target angle\n"
             "  space: reset speed/turn; while Policy, return to Stand over 2 s\n"
             "  h: show this help\n"
             "  Lateral movement and a backward command are not implemented for this policy.\n"
@@ -144,7 +145,11 @@ private:
             return;
         }
         const auto axes = control_.axes();
-        if (key == 'w' || key == 's' || key == 'q' || key == 'e' || key == ' ')
+        if (key == 'q' || key == 'e' || key == 'w') {
+            float degrees = axes.heading_offset * (180.0f / 3.14159265358979323846f);
+            if (std::abs(degrees) < 0.05f) degrees = 0;
+            std::printf("[key] %c target_heading=%+.1f deg (base +x=0, left=+)\n", key, degrees);
+        } else if (key == 'i' || key == 'k' || key == ' ')
             std::printf("[key] %s speed=%+.2f turn=%+.2f\n", key == ' ' ? "space" : std::string(1, key).c_str(), axes.speed, axes.turn);
         else if (key >= 0x20 && key < 0x7f)
             std::printf("[key] %c\n", key);

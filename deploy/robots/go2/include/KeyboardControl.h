@@ -122,6 +122,7 @@ public:
     {
         std::lock_guard<std::mutex> lock(mutex_);
         state_ = state;
+        heading_keys_active_ = false;
         request_.reset();
         if (state != Go2RuntimeState::Policy) axes_ = {};
     }
@@ -147,19 +148,36 @@ public:
             axes_.relative_heading = true;
             axes_.turn = 0;
         }
-        if (axes_.relative_heading)
+        if (left || right || heading_keys_active_)
             axes_.heading_offset = (static_cast<int>(left) - static_cast<int>(right)) * 0.2617993878f;
+        heading_keys_active_ = left || right;
     }
 
     void handle_key(char key)
     {
         std::lock_guard<std::mutex> lock(mutex_);
         switch (key) {
-        case 'w': axes_.speed = clamp_axis(axes_.speed + 0.25f); break;
-        case 's': axes_.speed = clamp_axis(axes_.speed - 0.25f); break;
-        case 'q': axes_.relative_heading = false; axes_.heading_offset = 0; axes_.turn = clamp_axis(axes_.turn - 0.25f); break;
-        case 'e': axes_.relative_heading = false; axes_.heading_offset = 0; axes_.turn = clamp_axis(axes_.turn + 0.25f); break;
+        case 'i': axes_.speed = clamp_axis(axes_.speed + 0.25f); break;
+        case 'k': axes_.speed = clamp_axis(axes_.speed - 0.25f); break;
+        case 'w':
+            axes_.relative_heading = true;
+            axes_.heading_offset = 0;
+            axes_.turn = 0;
+            heading_keys_active_ = false;
+            break;
+        case 'q':
+        case 'e': {
+            constexpr float pi = 3.14159265358979323846f;
+            axes_.relative_heading = true;
+            axes_.turn = 0;
+            heading_keys_active_ = false;
+            axes_.heading_offset = std::remainder(
+                axes_.heading_offset + (key == 'q' ? 1.0f : -1.0f) * pi / 18.0f,
+                2.0f * pi);
+            break;
+        }
         case ' ':
+            heading_keys_active_ = false;
             axes_ = {};
             if (state_ == Go2RuntimeState::Policy) request_ = Go2StateRequest::Stand;
             break;
@@ -177,6 +195,7 @@ public:
     {
         std::lock_guard<std::mutex> lock(mutex_);
         axes_ = {};
+        heading_keys_active_ = false;
         request_.reset();
         if (state_ == Go2RuntimeState::Policy) request_ = Go2StateRequest::Stand;
     }
@@ -215,6 +234,7 @@ private:
     mutable std::mutex mutex_;
     Go2RuntimeState state_ = Go2RuntimeState::Passive;
     Go2KeyboardAxes axes_{};
+    bool heading_keys_active_ = false;
     std::optional<Go2StateRequest> request_;
 };
 
