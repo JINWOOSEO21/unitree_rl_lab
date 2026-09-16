@@ -77,8 +77,8 @@ class BaseMapper:
         # Keep the last pose so clearing cannot bypass the discontinuity check.
         self.backend.clear([0])
 
-    def update(self, cloud, row):
-        points = raw_cloud_to_base(cloud)
+    def update(self, cloud, row, base_points=None):
+        points = raw_cloud_to_base(cloud) if base_points is None else base_points
         position, quat = odom_pose(row)
         if self.last_position is not None and np.linalg.norm(position-self.last_position) > 1.0:
             raise RuntimeError('odometry discontinuity: restart bridge to reset map')
@@ -279,7 +279,7 @@ def main():
     parser.add_argument('--publish-scandots', action='store_true', help='Publish terrain DDS for go2_ctrl')
     parser.add_argument('--scandots-topic', default='rt/parkour/scandots')
     parser.add_argument('--summary-only', action='store_true', help='Print counters once per second instead of all LowState rows')
-    parser.add_argument('--odom', choices=('leg','robot'), default='leg')
+    parser.add_argument('--odom', choices=('leg','robot','lio'), default='leg')
     parser.add_argument('--leg-contact-threshold', type=float, default=20.0,
                         help='Raw foot_force threshold; hardware calibration remains pending')
     parser.add_argument('--check-dependencies', action='store_true')
@@ -288,6 +288,8 @@ def main():
         dependencies()
         print('DDS types and torch/cupy import OK; no DDS participant created')
         return
+    if args.odom == 'lio' and args.publish_scandots and args.scandots_topic != 'rt/parkour/scandots_lio_eval':
+        parser.error('LIO is diagnostic: set --scandots-topic rt/parkour/scandots_lio_eval')
     if not args.interface or not 0 <= args.duration <= 300 or not 0 <= args.domain <= 232:
         parser.error('interface required; duration in [0,300], domain in [0,232]')
     output = sys.stdout
@@ -318,8 +320,13 @@ def main():
             output.flush()
     with redirect_stdout(sys.stderr):
         try:
-            code = run(args.interface, args.domain, args.duration, args.emcupy_root, emit,
-                       args.odom, args.leg_contact_threshold, args.publish_scandots, args.scandots_topic)
+            if args.odom == 'lio':
+                from lio.map_shadow import run as run_lio
+                code = run_lio(args.interface, args.domain, args.duration, args.emcupy_root, emit,
+                               args.publish_scandots, args.scandots_topic)
+            else:
+                code = run(args.interface, args.domain, args.duration, args.emcupy_root, emit,
+                           args.odom, args.leg_contact_threshold, args.publish_scandots, args.scandots_topic)
         except KeyboardInterrupt:
             code = 0
         except Exception as exc:
