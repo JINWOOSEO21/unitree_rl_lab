@@ -69,7 +69,8 @@ int main()
     std::printf("[x11-probe]   hold a -> expect left/+15 deg, release -> 0\n");
     std::printf("[x11-probe]   hold d -> expect right/-15 deg, release -> 0\n");
     std::printf("[x11-probe]   hold a+d together -> expect 0 deg (they cancel)\n");
-    std::printf("[x11-probe]   click another window while holding a -> expect focus lost, 0 deg\n");
+    std::printf("[x11-probe]   KEEP HOLDING a and click another window ->\n");
+    std::printf("[x11-probe]     expect FOCUS LOST then 0 deg while the key is still down\n");
     std::printf("[x11-probe] Ctrl+C to exit.\n\n");
 
     Go2KeyboardControl control;
@@ -83,8 +84,18 @@ int main()
     Go2HeldHeadingKeys previous{};
     bool previous_valid = false;
     float previous_offset = 0.0f;
+    bool previous_focus = true;
 
     while (keep_running) {
+        // Report focus separately: poll() drops held keys on focus loss, which would
+        // otherwise be indistinguishable from the user releasing the key.
+        const bool focus = held.focused();
+        if (focus != previous_focus) {
+            std::printf("[x11-probe] === FOCUS %s ===\n", focus ? "REGAINED" : "LOST");
+            std::fflush(stdout);
+            previous_focus = focus;
+        }
+
         // Go2TerminalInput arms on the a/d keypress byte; re-arm whenever the probe is idle
         // so a hold that starts while unarmed is still observed.
         if (!armed) {
@@ -98,9 +109,9 @@ int main()
         const bool changed = !previous_valid || keys.left != previous.left ||
                              keys.right != previous.right || offset != previous_offset;
         if (changed) {
-            std::printf("[x11-probe] a=%d d=%d -> heading_offset=%+.4f rad (%+.1f deg)\n",
+            std::printf("[x11-probe] a=%d d=%d -> heading_offset=%+.4f rad (%+.1f deg)%s\n",
                         static_cast<int>(keys.left), static_cast<int>(keys.right), offset,
-                        offset * kRadToDeg);
+                        offset * kRadToDeg, focus ? "" : "   [unfocused]");
             std::fflush(stdout);
             previous = keys;
             previous_offset = offset;

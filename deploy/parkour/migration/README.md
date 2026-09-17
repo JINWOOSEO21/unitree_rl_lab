@@ -99,7 +99,7 @@ libonnxruntime.so.1 => deploy/thirdparty/onnxruntime-linux-x64-1.22.0/lib/libonn
   `test_obs_golden`의 입력이 아니다. 여기에 물리면 관측 조립 단계가 FAIL로 나오지만
   (ONNX 출력 단계는 1000프레임 12000개 전부 PASS) 이는 fixture를 잘못 물린 것이지 회귀가 아니다.
 
-### A-4 키보드 / X11 — **미완, 사용자 조치 필요**
+### A-4 키보드 / X11 — 누름/해제/동시누름 통과, 포커스 이탈만 남음
 
 코드 확인 결과 **`--keyboard-check`로는 a/d hold 조향을 검증할 수 없다**:
 `Go2TerminalInput::poll()`은 상태가 Policy가 아니면 매 폴링마다 `held_heading_.clear()` 하고
@@ -124,9 +124,29 @@ RESULT: X11 steering UNAVAILABLE. a/d hold steering would be disabled.
 `[keyboard] X11 unavailable: a/d hold steering disabled` 를 출력한다 (안전하게 비활성화될 뿐
 오작동하지는 않는다). **따라서 wayland 세션에서는 a/d 조향을 쓸 수 없다.**
 
-남은 조치: 사용자가 GDM 로그인 화면에서 "Ubuntu on Xorg"로 재로그인한 뒤, 포커스된 터미널에서
-`bash notebook_setup.sh probe`를 직접 실행해 a / d / a+d 동시 / 포커스 이탈을 확인해야 한다.
-물리 키 입력이 필요하므로 이 세션에서는 대신 수행할 수 없다.
+#### Xorg 재로그인 후 실측 (사용자 직접 실행, 2026-09-17)
+
+GDM에서 "Ubuntu on Xorg" 선택 → `XDG_SESSION_TYPE=x11`, `XGetInputFocus`가 실제 터미널
+window 를 반환하고 `available()` 이 true. 결과:
+
+| 입력 | `heading_offset` | 판정 |
+|---|---|---|
+| `a` 누름 | `+0.2618 rad (+15.0도)` | PASS |
+| `a` 해제 | `0` | PASS |
+| `d` 누름 | `-0.2618 rad (-15.0도)` | PASS |
+| `d` 해제 | `0` | PASS |
+| `a`+`d` 동시 | `0` (상쇄) | PASS |
+| 동시누름에서 한 키만 해제 | 남은 키 값으로 복귀 (`a=1 d=1 → 0` 다음 `a=1 d=0 → +15`) | PASS |
+
+값이 `0.2617993878 rad = 15도` 와 정확히 일치한다. 동시누름 상태에서 빠져나올 때 latch 없이
+복귀하는 것도 확인했다. wayland 와 달리 Xorg 에서는 조향이 정상 동작한다.
+
+**포커스 이탈은 아직 미확인.** 최초 probe 는 포커스를 잃었을 때도 `a=0 d=0 -> 0` 으로만 찍어서
+키 해제와 구분되지 않았다 (probe 설계 실수). `Go2HeldHeadingInput::focused()` 접근자를 추가하고
+probe 가 `=== FOCUS LOST / REGAINED ===` 를 명시적으로 출력하도록 고쳤다. 남은 확인:
+**`a` 를 누른 채로** 다른 창을 클릭해 `FOCUS LOST` 직후 `0` 이 되는지 (키가 아직 눌린 상태에서)
+보는 것. 포커스 처리 자체는 `go2_held_heading_tests` 가 fake Xlib 백엔드로 이미 검증하지만,
+실제 X 서버에서 `XGetInputFocus` 가 창 전환을 보고하는지는 실측이 필요하다.
 
 ## 알려진 주의점
 
@@ -140,7 +160,7 @@ RESULT: X11 steering UNAVAILABLE. a/d hold steering would be disabled.
 ## 다음 단계
 
 1. ~~노트북 clone + 세션 실행~~ 완료. 단계 A-2/A-3 통과, A-4는 아래가 남았다.
-2. **노트북(사용자)**: "Ubuntu on Xorg"로 재로그인 → 포커스된 터미널에서 `bash notebook_setup.sh probe` → a / d / a+d / 포커스 이탈 결과를 이 문서에 기록. 물리 키 입력이라 대행 불가.
+2. ~~"Ubuntu on Xorg" 재로그인 + a / d / a+d 확인~~ 완료 (위 표). **남은 것: 포커스 이탈 1건** — `a`를 누른 채 다른 창 클릭 → `FOCUS LOST` 후 `0`. 물리 키 입력이라 대행 불가.
 3. Jetson: `bash jetson_survey.sh` 실행 후 결과 파일 전달 (노트북을 Go2에 유선 연결한 뒤 노트북 세션에서 해도 된다).
 4. 이후 단계 B(설치) → C(유선 분산, 수신 전용) → D(AP 무선, 수신 전용) → 측정 보고 → E(실제 제어).
 
