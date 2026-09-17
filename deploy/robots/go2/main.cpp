@@ -5,6 +5,7 @@
 #include "FSM/State_Parkour.h"
 #include "KeyboardControl.h"
 #include "StartupHandoff.h"
+#include "Go2Shutdown.h"
 #include "TerminalInput.h"
 
 #include <algorithm>
@@ -18,8 +19,9 @@
 
 namespace
 {
-std::atomic<bool> keep_running{true};
-void stop_on_signal(int) { keep_running = false; }
+volatile std::sig_atomic_t keep_running = 1;
+volatile std::sig_atomic_t shutdown_signal = SIGINT;
+void stop_on_signal(int signal) { shutdown_signal = signal; keep_running = 0; }
 
 struct LocalOptions
 {
@@ -96,10 +98,11 @@ void init_fsm_state(bool simulator)
 {
     auto startup_lowstate = std::make_shared<StartupLowState>();
     FSMState::lowstate = startup_lowstate;
+    go2_shutdown_receipt_ns = [startup_lowstate] { return startup_lowstate->receipt_ns(); };
     if (simulator) {
         spdlog::warn("Simulator startup explicitly selected: MotionSwitcher/StandDown handoff is bypassed");
         bool connected = false;
-        for (int poll = 0; poll < 750 && keep_running.load(); ++poll) {
+        for (int poll = 0; poll < 750 && keep_running; ++poll) {
             const uint64_t receipt = startup_lowstate->receipt_ns();
             const uint64_t now = steady_now_ns();
             if (receipt != 0 && receipt <= now && now - receipt <= 100'000'000) {
@@ -153,7 +156,7 @@ void init_fsm_state(bool simulator)
         return sample;
     };
     hooks.competing_lowcmd_active = [lowcmd_sub] { return !lowcmd_sub->isTimeout(); };
-    hooks.cancelled = [] { return !keep_running.load(); };
+    hooks.cancelled = [] { return !keep_running; };
     hooks.now_ns = steady_now_ns;
     hooks.wait_poll = [] { usleep(20000); };
 
@@ -186,7 +189,8 @@ int main(int argc, char** argv)
         Go2TerminalInput::print_help();
         std::signal(SIGINT, stop_on_signal);
         std::signal(SIGTERM, stop_on_signal);
-        while (keep_running.load()) {
+        std::signal(SIGHUP, stop_on_signal);
+        while (keep_running) {
             terminal.poll();
             usleep(10000);
         }
@@ -212,6 +216,7 @@ int main(int argc, char** argv)
     }
     std::signal(SIGINT, stop_on_signal);
     std::signal(SIGTERM, stop_on_signal);
+    std::signal(SIGHUP, stop_on_signal);
 
     // Unitree DDS Config
     unitree::robot::ChannelFactory::Instance()->Init(0, vm["network"].as<std::string>());
@@ -224,6 +229,13 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    const auto down_pose = param::config["FSM"]["FixStand"]["qs"][1].as<std::vector<float>>();
+    if (down_pose.size() != go2_shutdown_down_q.size())
+        throw std::runtime_error("shutdown down pose must contain 12 joints");
+    std::copy(down_pose.begin(), down_pose.end(), go2_shutdown_down_q.begin());
+
+    go2_gyro_bias = std::make_unique<Go2GyroBiasSubscriber>();
+
     // Initialize FSM
     auto fsm = std::make_unique<CtrlFSM>(param::config["FSM"]);
     fsm->start();
@@ -233,12 +245,25 @@ int main(int argc, char** argv)
         std::cout << "And then press [Start] to start controlling the robot.\n";
     }
 
-    while (keep_running.load()) {
+    while (keep_running) {
         if (terminal) terminal->poll();
         usleep(10000);
     }
+    go2_shutdown.request();
+    spdlog::warn("Shutdown requested: Policy -> settled Stand -> StandDown; "
+                 "waiting for 0.5 s measured down settling and another 1 s hold. Control output remains active.");
+    auto next_notice = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+    while (!go2_shutdown.complete()) {
+        if (std::chrono::steady_clock::now() >= next_notice) {
+            spdlog::warn("Shutdown still waiting: down pose not confirmed. Keeping control active; "
+                         "check posture, joint settling and LowState connection. Repeated signals do not force exit.");
+            next_notice += std::chrono::seconds(5);
+        }
+        usleep(10000);
+    }
+    spdlog::info("Shutdown: measured down pose settled for 0.5 s and held another 1 s; exiting controller");
     // CtrlFSM has no stop API. Restore the terminal, then terminate the process without
     // racing its recurrent control thread against state destruction.
     terminal.reset();
-    std::_Exit(130);
+    std::_Exit(128 + shutdown_signal);
 }

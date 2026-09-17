@@ -90,6 +90,7 @@ public:
             "  w: reset base-relative target heading to 0 deg; keep speed and mode\n"
             "  q/e: base-relative target left/right 10 deg per key; print target angle\n"
             "  space: reset speed/turn; while Policy, return to Stand over 2 s\n"
+            "  Ctrl+C: controlled shutdown via settled Stand -> StandDown -> measured down hold\n"
             "  h: show this help\n"
             "  Lateral movement and a backward command are not implemented for this policy.\n"
             "  Keep this process in the terminal foreground; losing it returns Policy to Stand.");

@@ -54,3 +54,14 @@ add_test(NAME go2_keyboard_pty
 add_executable(go2_held_heading_tests tests/test_held_heading_input.cpp src/HeldHeadingInput.cpp)
 target_compile_options(go2_held_heading_tests PRIVATE -UNDEBUG)
 add_test(NAME go2_held_heading_tests COMMAND go2_held_heading_tests)
+
+add_executable(go2_shutdown_tests tests/test_shutdown_control.cpp)
+target_compile_options(go2_shutdown_tests PRIVATE -UNDEBUG)
+add_test(NAME go2_shutdown_tests COMMAND go2_shutdown_tests)
+
+add_executable(go2_gyro_bias_tests tests/test_gyro_bias.cpp)
+target_compile_options(go2_gyro_bias_tests PRIVATE -UNDEBUG)
+add_test(NAME go2_gyro_bias_tests COMMAND go2_gyro_bias_tests)
+
+# Run with the Python GyroBiasOutput loopback publisher, not live robot DDS.
+add_executable(go2_gyro_bias_dds_probe tests/gyro_bias_dds_probe.cpp)

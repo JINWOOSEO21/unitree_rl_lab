@@ -1,3 +1,4 @@
+#include "Go2Shutdown.h"
 #include "FSM/State_Parkour.h"
 
 #include <chrono>
@@ -70,6 +71,8 @@ State_Parkour::State_Parkour(int state_mode, std::string state_string)
         cfg_or<std::string>(cfg, "scandots_topic", "rt/parkour/scandots"));
     policy_ = std::make_unique<isaaclab::OrtRunner>((dir / "policy.onnx").string());
 
+    go2_guard_operator_routes(*this);
+
     // 넘어지면 Passive.
     // **어느 안전장치가 걸렸는지 반드시 남긴다.** 둘 다 "Parkour → Passive" 로만 보이면
     // 넘어진 것인지 지각이 끊긴 것인지 구분할 수 없고, 그 둘은 대응이 완전히 다르다.
@@ -97,6 +100,8 @@ State_Parkour::State_Parkour(int state_mode, std::string state_string)
         },
         FSMStringMap.right.at("Passive"));
 
+    registered_checks.emplace_back([this] { return !bias_ready_; }, FSMStringMap.right.at("FixStand"));
+    go2_add_shutdown_routes(*this, Go2RuntimeState::Policy);
     add_keyboard_routes();
 
     spdlog::info("State_Parkour: policy={} scandots_timeout={}s contact_thr={}",
@@ -115,6 +120,15 @@ bool State_Parkour::bad_orientation(float limit_rad) const
 
 void State_Parkour::enter()
 {
+    have_target_ = false;
+    std::string reason = "gyro bias subscriber unavailable";
+    bias_ready_ = go2_gyro_bias && go2_gyro_bias->get(applied_bias_, &reason);
+    if (!bias_ready_) {
+        spdlog::warn("Policy entry cancelled: {}; returning to Stand", reason);
+        return;
+    }
+    spdlog::info("Policy gyro bias latched: session={} tick={} bias=[{}, {}, {}] rad/s",
+        applied_bias_.session, applied_bias_.tick, applied_bias_.bias[0], applied_bias_.bias[1], applied_bias_.bias[2]);
     if (go2_keyboard_control) go2_keyboard_control->set_state(Go2RuntimeState::Policy);
     // PD 게인은 계약(학습값 kp=40, kd=1)을 쓴다.
     for (int i = 0; i < kNumJoints; ++i) {
@@ -180,7 +194,9 @@ void State_Parkour::policy_step()
     {
         std::lock_guard<std::mutex> lk(lowstate->mutex_);
         const auto& imu = lowstate->msg_.imu_state();
-        in.gyro_b = Eigen::Vector3f(imu.gyroscope()[0], imu.gyroscope()[1], imu.gyroscope()[2]);
+        in.gyro_b = Eigen::Vector3f(imu.gyroscope()[0] - applied_bias_.bias[0],
+                                  imu.gyroscope()[1] - applied_bias_.bias[1],
+                                  imu.gyroscope()[2] - applied_bias_.bias[2]);
         in.quat_w = Eigen::Quaternionf(imu.quaternion()[0], imu.quaternion()[1],
                                        imu.quaternion()[2], imu.quaternion()[3]);
         for (int i = 0; i < kNumJoints; ++i) {

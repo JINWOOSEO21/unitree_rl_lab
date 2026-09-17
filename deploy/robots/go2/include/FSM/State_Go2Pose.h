@@ -9,6 +9,8 @@
 
 #include "FSM/FSMState.h"
 #include "KeyboardControl.h"
+#include "Go2Shutdown.h"
+#include "GyroBiasSubscriber.h"
 #include "parkour/scandots.h"
 
 class State_Go2Pose : public FSMState
@@ -17,6 +19,7 @@ public:
     State_Go2Pose(int state, std::string state_string)
         : FSMState(state, state_string)
     {
+        go2_guard_operator_routes(*this);
         const auto cfg = param::config["FSM"]["FixStand"];
         kp_ = cfg["kp"].as<std::vector<float>>();
         kd_ = cfg["kd"].as<std::vector<float>>();
@@ -45,6 +48,9 @@ public:
             scan_ = std::make_unique<parkour::ScandotsSubscriber>(
                 parkour_cfg["scandots_topic"].as<std::string>());
         }
+        go2_add_shutdown_routes(*this, down_ ? Go2RuntimeState::StandDown : Go2RuntimeState::Stand,
+            [this] { return complete_.load() && down_gate_.ready() && upright(0.3f); },
+            [this] { return complete_.load(); });
         add_routes();
     }
 
@@ -143,6 +149,8 @@ private:
     Go2PolicyReadiness readiness() const
     {
         Go2PolicyReadiness result;
+        parkour::GyroBiasSample bias;
+        result.gyro_bias_valid = go2_gyro_bias && go2_gyro_bias->get(bias);
         std::vector<float> measured(target_.size());
         {
             std::lock_guard<std::mutex> lock(lowstate->mutex_);
@@ -179,13 +187,18 @@ private:
                 }
                 if (policy_request) {
                     if (target == Go2RuntimeState::Passive &&
-                        !(ready.stand_complete && ready.scan_fresh_and_valid && ready.upright)) {
+                        !(ready.stand_complete && ready.scan_fresh_and_valid && ready.upright && ready.gyro_bias_valid)) {
                         if (go2_keyboard_control->consume_request(Go2StateRequest::Policy)) {
                             if (!ready.stand_complete)
                                 spdlog::warn("Policy entry rejected: stand motion incomplete or joint error exceeds tolerance");
                             else if (!ready.scan_fresh_and_valid)
                                 spdlog::warn("Policy entry rejected: scandots are missing, stale, non-finite, or out of range");
-                            else
+                            else if (!ready.gyro_bias_valid) {
+                                parkour::GyroBiasSample bias;
+                                std::string reason = "gyro bias subscriber unavailable";
+                                if (go2_gyro_bias) go2_gyro_bias->get(bias, &reason);
+                                spdlog::warn("Policy entry rejected: {}", reason);
+                            } else
                                 spdlog::warn("Policy entry rejected: IMU orientation is invalid or not upright");
                         }
                         return false;
@@ -206,7 +219,7 @@ private:
             registered_checks.emplace_back(
                 [this, joystick_policy] {
                     const auto ready = readiness();
-                    return ready.stand_complete && ready.scan_fresh_and_valid && ready.upright &&
+                    return ready.stand_complete && ready.scan_fresh_and_valid && ready.upright && ready.gyro_bias_valid &&
                            joystick_policy(lowstate->joystick);
                 },
                 FSMStringMap.right.at("Parkour"));

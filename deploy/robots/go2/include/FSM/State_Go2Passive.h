@@ -2,12 +2,15 @@
 
 #include "FSM/State_Passive.h"
 #include "KeyboardControl.h"
+#include "Go2Shutdown.h"
 
 class State_Go2Passive : public State_Passive
 {
 public:
     State_Go2Passive(int state, std::string state_string) : State_Passive(state, state_string)
     {
+        go2_guard_operator_routes(*this);
+        go2_add_shutdown_routes(*this, Go2RuntimeState::Passive);
         add_keyboard_routes();
     }
 

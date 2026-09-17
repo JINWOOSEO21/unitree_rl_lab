@@ -24,7 +24,7 @@ def read_until(fd, needle, timeout=3.0):
     return data
 
 
-def main():
+def main(stop_signal=signal.SIGINT):
     pid, master = pty.fork()
     if pid == 0:
         os.execv(sys.argv[1], [sys.argv[1], "--keyboard-check"])
@@ -47,7 +47,7 @@ def main():
     output += read_until(master, b"[key] w target_heading=+0.0 deg")
     os.write(master, b"k")
     output += read_until(master, b"[key] k speed=+0.00")
-    os.kill(pid, signal.SIGINT)
+    os.kill(pid, stop_signal)
     _, status = os.waitpid(pid, 0)
     final_flags = termios.tcgetattr(master)[3]
     os.close(master)
@@ -58,4 +58,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    for stop_signal in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        main(stop_signal)

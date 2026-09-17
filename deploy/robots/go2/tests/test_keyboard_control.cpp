@@ -119,11 +119,12 @@ void test_held_heading()
 
 void test_requests_and_routing()
 {
-    const Go2PolicyReadiness ready{true, true, true};
-    const Go2PolicyReadiness stale{true, false, true};
+    const Go2PolicyReadiness ready{true, true, true, true};
+    const Go2PolicyReadiness stale{true, false, true, true};
     assert(go2_route_request(Go2RuntimeState::Passive, Go2StateRequest::Stand) == Go2RuntimeState::Stand);
     assert(!go2_route_request(Go2RuntimeState::Passive, Go2StateRequest::Policy, ready));
     assert(!go2_route_request(Go2RuntimeState::Stand, Go2StateRequest::Policy, stale));
+    assert(!go2_route_request(Go2RuntimeState::Stand, Go2StateRequest::Policy, {true, true, true, false}));
     assert(go2_route_request(Go2RuntimeState::Stand, Go2StateRequest::Policy, ready) == Go2RuntimeState::Policy);
     assert(go2_route_request(Go2RuntimeState::Policy, Go2StateRequest::Passive) == Go2RuntimeState::Passive);
 
