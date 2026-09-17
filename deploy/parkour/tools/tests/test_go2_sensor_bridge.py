@@ -131,11 +131,13 @@ class SensorBridgeTest(unittest.TestCase):
             def Init(self,*args):pass
             def Close(self):pass
         deps=(lambda *args:None,Sub,object,object,object)
-        with patch.object(bridge,'dependencies',return_value=deps), patch.object(bridge,'BaseMapper'), patch.object(bridge,'ScandotsOutput') as output:
+        with patch.object(bridge,'dependencies',return_value=deps), patch.object(bridge,'BaseMapper'), patch.object(bridge,'ScandotsOutput') as output, patch.object(bridge,'GyroBiasOutput') as bias_output:
             bridge.run('test',0,.001,Path('.'),lambda e:None,publish_scandots=True)
             output.assert_called_once_with('rt/parkour/scandots')
             output.return_value.publish.assert_not_called()
             output.return_value.close.assert_called_once()
+            bias_output.assert_called_once_with()
+            bias_output.return_value.close.assert_called_once_with(0)
 
     def test_invalid_leg_support_does_not_fall_back_to_older_pose(self):
         row = {'frame_id':'odom','child_frame_id':'base_link',

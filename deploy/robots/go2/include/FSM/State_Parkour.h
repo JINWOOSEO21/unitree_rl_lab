@@ -22,6 +22,7 @@
 
 #include "FSM/FSMState.h"
 #include "KeyboardControl.h"
+#include "GyroBiasSubscriber.h"
 #include "isaaclab/algorithms/algorithms.h"
 #include "parkour/action.h"
 #include "parkour/contract.h"
@@ -52,6 +53,8 @@ private:
     std::unique_ptr<parkour::ScandotsSubscriber> scan_;
     std::unique_ptr<isaaclab::OrtRunner> policy_;
     parkour::HeadingCommand heading_;
+    parkour::GyroBiasSample applied_bias_;
+    bool bias_ready_ = false; // FSM-owned; sample is immutable while policy thread runs.
 
     // 설정 (config.yaml FSM.Parkour)
     double scandots_timeout_s_ = 0.5;

@@ -25,6 +25,7 @@ from replay_go2_base_scan import (
 )
 from em_sidecar.go2_cloud import RAW_FRAME, raw_cloud_to_base
 from go2_leg_pose import LegPose
+from go2_gyro_bias_output import GyroBiasOutput
 from policy_input_guard import GuardConfig, validate_lowstate
 from go2_scandots_output import ScandotsOutput
 
@@ -62,6 +63,14 @@ def preceding_pose(poses, cloud_ns, max_age_ns=20_000_000):
             odom_pose(row)  # strict frame and finite-pose validation
             return row
     raise ValueError('missing_preceding_odom')
+
+
+def gyro_bias_status(leg, low_receipt_ns, low_tick, now_ns):
+    """Return one heartbeat state without changing the estimator."""
+    fresh = (low_receipt_ns is not None and
+             0 <= now_ns-low_receipt_ns <= 100_000_000)
+    return (bool(leg.calibrated and fresh), leg.gyro_bias.copy(),
+            0 if low_tick is None else int(low_tick))
 
 
 class BaseMapper:
@@ -123,6 +132,7 @@ def run(interface, domain, duration, emcupy_root, emit, odom_source='leg', leg_c
     last_stamp = {'cloud': None, 'odom': None}
     fatal = threading.Event()
     output = None
+    bias_output = None
     generation = [0]
     last_low = [None, None]  # receipt, unique tick
     last_support = [False]
@@ -196,6 +206,8 @@ def run(interface, domain, duration, emcupy_root, emit, odom_source='leg', leg_c
     try:
         if publish_scandots:
             output = ScandotsOutput(scandots_topic)
+            if leg is not None:
+                bias_output = GyroBiasOutput()
         channels = [
             ('rt/lowstate', low_type, low_callback),
             ('rt/utlidar/cloud', cloud_type, lambda m: sensor_callback('cloud', m)),
@@ -208,14 +220,26 @@ def run(interface, domain, duration, emcupy_root, emit, odom_source='leg', leg_c
             subs.append(sub)
         start = time.monotonic()
         next_tick = start
+        next_bias = start + 0.2
         last_cloud = None
         while (duration == 0 or time.monotonic()-start < duration) and not fatal.is_set():
             time.sleep(max(0, next_tick-time.monotonic()))
-            next_tick = max(next_tick+0.1, time.monotonic())
+            loop_now = time.monotonic()
+            next_tick = max(next_tick+0.1, loop_now)
             with lock:
                 item = latest[0]
                 pose_snapshot = list(poses)
                 version = generation[0]
+            if bias_output is not None and loop_now >= next_bias:
+                try:
+                    with lock:
+                        now_ns = time.monotonic_ns()
+                        calibrated, bias, source_tick = gyro_bias_status(
+                            leg, last_low[0], last_low[1], now_ns)
+                    bias_output.publish(calibrated, bias, source_tick)
+                except Exception as exc:
+                    failure('fatal', f'gyro bias: {exc}')
+                next_bias = max(next_bias + 0.2, loop_now)
             if item is None or item[1] == last_cloud:
                 if output is not None:
                     with lock:
@@ -265,8 +289,12 @@ def run(interface, domain, duration, emcupy_root, emit, odom_source='leg', leg_c
             for sub in subs:
                 sub.Close()
         finally:
-            if output is not None:
-                output.close()
+            try:
+                if output is not None:
+                    output.close()
+            finally:
+                if bias_output is not None:
+                    bias_output.close(0 if last_low[1] is None else last_low[1])
 
 
 def main():

@@ -24,6 +24,7 @@ struct Go2PolicyReadiness
     bool stand_complete = false;
     bool scan_fresh_and_valid = false;
     bool upright = false;
+    bool gyro_bias_valid = false;
 };
 
 inline std::optional<Go2RuntimeState> go2_route_request(
@@ -38,7 +39,7 @@ inline std::optional<Go2RuntimeState> go2_route_request(
             return Go2RuntimeState::StandDown;
         if (request == Go2StateRequest::Passive) return Go2RuntimeState::Passive;
         if (request == Go2StateRequest::Policy && ready.stand_complete &&
-            ready.scan_fresh_and_valid && ready.upright)
+            ready.scan_fresh_and_valid && ready.upright && ready.gyro_bias_valid)
             return Go2RuntimeState::Policy;
         break;
     case Go2RuntimeState::StandDown:
