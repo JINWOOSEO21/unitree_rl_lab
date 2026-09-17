@@ -8,7 +8,7 @@
 | 항목 | 결정 |
 |---|---|
 | 코드 전달 | 브랜치 `migration/jetson-galaxybook` commit + push, 각 장비에서 clone. main 직접 push 없음 |
-| 노트북 작업 | 데스크톱에서 SSH 원격 진행. apt(sudo)와 실물 키보드 hold/release 테스트만 사용자가 직접 수행 |
+| 노트북 작업 | 노트북에서 별도 Claude Code 세션으로 진행 (데스크톱과 네트워크 대역이 달라 SSH 원격 불가). 아래 "노트북 세션 요청문" 사용 |
 | Jetson 작업 | `jetson_survey.sh`를 사용자가 직접 실행하고 결과 파일 전달. 비밀번호는 공유하지 않음 |
 | 키보드 세션 | GDM 로그인에서 "Ubuntu on Xorg" 선택. Wayland/XWayland 경로는 사용하지 않음 |
 
@@ -55,6 +55,22 @@ bridge 환경: Python 3.11.15, numpy 1.26.0, torch 2.7.0+cu128, cupy 13.6.0 (CUD
 
 ## 다음 단계
 
-1. 노트북: openssh-server 설치, 현재 IP/사용자명 전달, 데스크톱에서 `ssh-copy-id`, `notebook_setup.sh deps`가 출력하는 apt 한 줄 실행.
-2. Jetson: `bash jetson_survey.sh` 실행 후 결과 파일 전달.
+1. 노트북: 이 브랜치를 clone한 뒤 노트북에서 Claude Code를 실행하고 아래 요청문을 전달한다.
+2. Jetson: `bash jetson_survey.sh` 실행 후 결과 파일 전달 (노트북을 Go2에 유선 연결한 뒤 노트북 세션에서 해도 된다).
 3. 이후 단계 B(설치) → C(유선 분산, 수신 전용) → D(AP 무선, 수신 전용) → 측정 보고 → E(실제 제어).
+
+### 노트북에서 최초 1회
+
+```
+sudo apt update && sudo apt install -y git
+mkdir -p ~/workspace/codes && cd ~/workspace/codes
+GIT_LFS_SKIP_SMUDGE=1 git clone --branch migration/jetson-galaxybook https://github.com/JINWOOSEO21/unitree_rl_lab.git
+cd unitree_rl_lab && claude
+```
+
+브랜치가 main에 merge된 뒤에는 `--branch main`으로 바꾼다.
+
+### 노트북 세션 요청문
+
+> `deploy/parkour/migration_jetson_galaxybook_plan.md`와 `deploy/parkour/migration/README.md`를 읽고 Galaxy Book4 Pro controller 쪽 이식을 진행해줘. 이 장비가 노트북이다. 단계 A-2~A-4부터 시작해: `deploy/parkour/migration/notebook_setup.sh`의 deps → clone → sdk → build → test → manifest 순서로 실행하고, sudo가 필요한 apt 명령은 나에게 실행을 요청해. 데스크톱 build 디렉터리는 복사하지 말고 새로 빌드해. 세션이 Xorg인지(`echo $XDG_SESSION_TYPE`) 먼저 확인하고, 모터 출력 없이 `--keyboard-check`와 a/d hold/release/동시누름/포커스이탈을 검증해. go2_ctrl 본 실행과 LowCmd 송신은 내가 명시적으로 지시하기 전에는 하지 마. 결과와 manifest 출력을 README에 기록하고 같은 브랜치에 commit/push해줘.
+
