@@ -154,14 +154,20 @@ def dependencies():
 
 
 def run(interface, domain, duration, emcupy_root, emit, odom_source='leg', leg_contact_threshold=20.0,
-        publish_scandots=False, scandots_topic='rt/parkour/scandots'):
+        publish_scandots=False, scandots_topic='rt/parkour/scandots', leg_odom_hz=100.0):
     if odom_source not in ('leg', 'robot'):
         raise ValueError('odom source must be leg or robot')
     initialize, subscriber, low_type, cloud_type, odom_type = dependencies()
     mapper = BaseMapper(emcupy_root)
     # Before any subscriber exists, so the JIT cannot starve the DDS reader. See warmup().
     mapper.warmup()
-    leg = LegPose(contact_threshold=leg_contact_threshold) if odom_source == 'leg' else None
+    # The estimator runs slower than the topic on purpose: its kinematics cost 1.5 ms per
+    # sample on the Jetson, and at 500 Hz that holds the GIL for 76 % of a core -- the cloud
+    # reader, the tick loop and the GPU call all starve behind it. The map consumes pose at
+    # 10 Hz and preceding_pose accepts one up to 20 ms old, so 100 Hz leaves margin on both.
+    # The offline gate (em_sidecar/tests/test_leg_odometry.py) drives the estimator at 50 Hz.
+    leg = (LegPose(contact_threshold=leg_contact_threshold, rate_hz=leg_odom_hz)
+           if odom_source == 'leg' else None)
     lock = threading.RLock()
     poses = deque(maxlen=2000)
     latest = [None]
@@ -366,6 +372,8 @@ def main():
     parser.add_argument('--odom', choices=('leg','robot','lio'), default='leg')
     parser.add_argument('--leg-contact-threshold', type=float, default=20.0,
                         help='Raw foot_force threshold; hardware calibration remains pending')
+    parser.add_argument('--leg-odom-hz', type=float, default=100.0,
+                        help='Leg estimator rate; 0 runs it on every LowState sample (500 Hz)')
     parser.add_argument('--check-dependencies', action='store_true')
     args = parser.parse_args()
     if args.check_dependencies:
@@ -410,7 +418,8 @@ def main():
                                args.publish_scandots, args.scandots_topic)
             else:
                 code = run(args.interface, args.domain, args.duration, args.emcupy_root, emit,
-                           args.odom, args.leg_contact_threshold, args.publish_scandots, args.scandots_topic)
+                           args.odom, args.leg_contact_threshold, args.publish_scandots,
+                           args.scandots_topic, leg_odom_hz=args.leg_odom_hz)
         except KeyboardInterrupt:
             code = 0
         except Exception as exc:

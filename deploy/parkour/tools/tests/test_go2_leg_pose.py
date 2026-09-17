@@ -49,6 +49,36 @@ class LegPoseTest(unittest.TestCase):
             step.assert_not_called()
         with self.assertRaises(RuntimeError): adapter.update(low(),99)
 
+    def test_rate_limit_decimates_without_skipping_the_kinematics_budget(self):
+        """500 Hz of kinematics is 76% of a Jetson core under the GIL; 100 Hz is 15%."""
+        adapter=LegPose(calibration_seconds=0,rate_hz=100.)
+        accepted=[t for t in range(100,600,2) if adapter.update(low(),t) is not None]
+        self.assertEqual(accepted,list(range(100,600,10)))  # exactly every 5th 2 ms sample
+        self.assertEqual(adapter.last_tick,590)  # decimated samples never advance the clock
+
+    def test_rate_limit_keeps_pose_inside_the_pairing_window(self):
+        """preceding_pose rejects a pose older than 20 ms, so the interval must stay under it."""
+        adapter=LegPose(calibration_seconds=0,rate_hz=100.)
+        ticks=[t for t in range(100,600,2) if adapter.update(low(),t) is not None]
+        self.assertLessEqual(max(b-a for a,b in zip(ticks,ticks[1:])),20)
+
+    def test_rate_zero_runs_every_sample(self):
+        adapter=LegPose(calibration_seconds=0)
+        self.assertEqual(adapter.min_interval_s,0.)
+        accepted=[t for t in range(100,200,2) if adapter.update(low(),t) is not None]
+        self.assertEqual(accepted,list(range(100,200,2)))
+
+    def test_rate_limit_still_sees_a_gap(self):
+        """Decimation must not swallow a real hole: both are measured from the same clock."""
+        adapter=LegPose(calibration_seconds=0,rate_hz=100.)
+        for tick in range(100,600,2): adapter.update(low(),tick)
+        gapped=adapter.update(low(),870)  # 280 ms after the last accepted sample
+        self.assertAlmostEqual(gapped['pose_gap_s'],.28)
+
+    def test_rate_slower_than_max_dt_is_refused(self):
+        """Such a rate would report every single sample as a gap instead of decimating."""
+        with self.assertRaises(ValueError): LegPose(calibration_seconds=0,rate_hz=5.)
+
     def test_one_gap_reports_itself_and_the_stream_recovers(self):
         """A single gap must not wedge the adapter: every later sample was still fine."""
         adapter=LegPose(calibration_seconds=0)

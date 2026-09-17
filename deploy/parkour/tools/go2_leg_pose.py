@@ -20,15 +20,19 @@ from policy_input_guard import GuardConfig, validate_lowstate
 
 class LegPose:
     def __init__(self, contract_dir=ROOT / 'contract', contact_threshold=20.0,
-                 calibration_seconds=10.0, max_gaps=4, gap_window_s=30.0):
+                 calibration_seconds=10.0, max_gaps=4, gap_window_s=30.0, rate_hz=0.0):
         if not np.isfinite(contact_threshold) or contact_threshold < 0:
             raise ValueError('leg contact threshold must be finite and non-negative')
         if not np.isfinite(calibration_seconds) or calibration_seconds < 0:
             raise ValueError('calibration duration must be finite and non-negative')
         if max_gaps < 0 or not np.isfinite(gap_window_s) or gap_window_s <= 0:
             raise ValueError('gap budget must be non-negative over a positive window')
+        if not np.isfinite(rate_hz) or rate_hz < 0:
+            raise ValueError('estimator rate must be finite and non-negative')
         self.max_gaps = int(max_gaps)
         self.gap_window_s = float(gap_window_s)
+        # 0 keeps the historical behaviour: run the kinematics on every sample handed in.
+        self.min_interval_s = 0.0 if rate_hz == 0 else 1.0/float(rate_hz)
         self.calibration_seconds = float(calibration_seconds)
         self.gyro_bias = np.zeros(3)
         self.calibrated = calibration_seconds == 0  # Explicit offline baseline only.
@@ -40,6 +44,8 @@ class LegPose:
             raise ValueError('invalid joint/foot permutation')
         self.estimator = LegOdometry(Go2Kinematics(contract_dir / 'em_geometry.npz'),
                                     LegOdomCfg(contact_force_thr=contact_threshold))
+        if self.min_interval_s > self.estimator.cfg.max_dt_s:
+            raise ValueError('estimator rate slower than max_dt_s would gap on every sample')
         self.last_tick = None
         self.first_tick = None
         self.gaps = 0
@@ -114,19 +120,29 @@ class LegPose:
         return gap_s
 
     def update(self, low, tick):
-        validate_lowstate(low, GuardConfig())
+        """Fold one LowState sample in, or return None if it was a duplicate or decimated.
+
+        The tick checks come before validate_lowstate so a decimated sample costs almost
+        nothing: on the Jetson the kinematics below run 1.5 ms against a 2.0 ms budget at
+        500 Hz, which is 76 % of a core held under the GIL, and everything else sharing the
+        process starves behind it. Callers that need every sample validated at full rate
+        must still do that themselves -- the bridge does.
+        """
         tick = int(tick)
         if tick < 0:
             raise ValueError('negative LowState tick')
-        gap_s = None
+        gap = None
         if self.last_tick is not None:
             if tick < self.last_tick:
                 raise RuntimeError('leg LowState clock regressed; restart bridge/map required')
             if tick == self.last_tick:
                 return None  # Never refresh pose age with a duplicate source sample.
             gap = (tick-self.last_tick)*.001
-            if gap > self.estimator.cfg.max_dt_s:
-                gap_s = self._note_gap(tick, gap)
+            if gap < self.min_interval_s:
+                return None  # Too soon to be worth the kinematics; see min_interval_s.
+        validate_lowstate(low, GuardConfig())
+        gap_s = (self._note_gap(tick, gap)
+                 if gap is not None and gap > self.estimator.cfg.max_dt_s else None)
         if self.first_tick is None:
             self.first_tick = tick
         q = np.asarray([m['q'] for m in low['motor_state'][:12]])[self.joints]
