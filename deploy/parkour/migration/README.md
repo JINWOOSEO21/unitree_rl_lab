@@ -47,6 +47,81 @@ bridge 환경: Python 3.11.15, numpy 1.26.0, torch 2.7.0+cu128, cupy 13.6.0 (CUD
 - Python: `tools/tests` + `tests` 71 통과, 2 실패. 실패 2건은 `test_audit_go2_targets.py`이며 gitignore된 `captures/frame_inspection_20260915/jetson_go2_description.urdf`가 없어서다. captures가 있는 데스크톱 checkout에서는 6/6 통과. `go2_sensor_bridge.py` 런타임 경로는 captures를 참조하지 않는다.
 - Python 3.8 정적 검사: bridge 런타임(`tools`, `em_sidecar`, `vendored`, `common`, `lio`) 46개 파일과 elevation_mapping_cupy 58개 파일에서 3.8 비호환 문법/API 없음. 실제 3.8 인터프리터 실행 검증은 Jetson에서 해야 한다.
 
+## Jetson bridge 기동 실패 — 원인과 수정 (2026-09-17, 단계 C-2)
+
+증상: Jetson 에서 bridge 가 뜬 직후 `fatal: leg LowState gap too large` 로 죽고 scandots 가
+한 번도 나오지 않았다. "Jetson 연산 능력이 부족하다" 로 보였으나 실측은 반대였다.
+
+### 측정 (계획 C-5: "느리다고 timeout 부터 늘리지 말고 원인/최악지연을 측정한다")
+
+`gap_probe.py` — lowstate 수신 + 10 Hz map 갱신, 구독 전용, 120 초:
+
+| | map 없이 (90 s) | map 10 Hz (120 s) |
+|---|---|---|
+| lowstate 간격 p50 / p90 / p99 | 2 / 3 / 3 ms | **2 / 2 / 3 ms** |
+| 최대 | 21 ms | **280 ms (1 회)** |
+| 100 ms 초과 | 0 | **1** |
+
+map 부하를 걸어도 p50/p90/p99 가 변하지 않는다. 280 ms 스파이크는 측정 루프 시작 **이전**
+(at_s = −4.39 s, map 초기화 구간)에 1 회뿐이고 직후 간격은 `[2,2,2,2,2,2,2,1,3,2] ms` —
+즉시 회복해 남은 115 초 동안 20 ms 초과가 0 회다. 정상 구간 성능은 충분하다.
+
+`tools/go2_cloud_latency_probe.py` — 실제 lidar cloud + 실제 map 갱신, 60 초:
+
+```
+clouds=992 (16.5 Hz)  same_stamp=0  back_stamp=0   lowstate=32245 (537 Hz)
+cloud 도착 간격      p50 64.9  p90 66.3  max 163.7 ms
+tick 이 집었을 때 나이 p50 31.0  p90 57.2  max  64.5 ms   (200 ms 넘어야 cloud_too_old)
+실제 map 갱신        p50 30.7  p90 42.4  max  49.9 ms
+cloud 당 점 개수     p50 4172
+```
+
+### 원인
+
+Jetson 성능이 아니라 **복구 경로 부재**였다. `go2_leg_pose.update()` 는 간격이 `max_dt_s`
+를 넘으면 `last_tick` 을 갱신하지 않은 채 raise 한다. 그래서 이후 모든 표본이 고정된 옛
+tick 과 비교되며 영구히 fatal 을 낸다. 같은 저장소의 `LegOdometry.step()` 은 같은 상황에서
+그 구간만 건너뛰고 계속 가므로 정책이 두 곳에서 엇갈려 있었다. 데스크톱에서 안 드러난 것은
+초기화 스파이크가 100 ms 미만이었기 때문이고, Jetson 은 GPU 가 느려 최초 CUDA/CuPy JIT 가
+207 ms 걸려서 걸렸을 뿐이다 (같은 구간 map p50 은 31 ms).
+
+### 수정 두 가지
+
+1. `BaseMapper.warmup()` — 구독자를 만들기 전에 합성 클라우드로 update 를 한 번 돌려 커널을
+   컴파일한다. 굶길 리더 스레드가 아직 없는 시점이다. 결과는 버려 실지도는 빈 상태로 시작한다.
+   warmup 은 최적화일 뿐 전제조건이 아니므로 실패해도 기동을 막지 않는다. Jetson 실측 **49~77 ms**.
+2. 구멍이 나도 복구한다. 간격을 보고만 하고 계속 간다. 구멍 동안 로봇은 움직였는데 odometry 는
+   그만큼을 적분하지 못하므로, 그 전에 쌓은 지도는 못 잰 이동거리만큼 어긋나 있다 — 브리지가
+   `discard_map()` 으로 버리고 다음 클라우드부터 다시 만든다. 위치 자체는 유지한다 (튀면
+   지도의 1 m 불연속 검사에 걸린다). 구멍 직후 발을 곧바로 정지 발로 믿으면 안 되므로
+   (`resume_after_gap()`) 20 ms 재안착을 강제한다. 30 초에 4 회를 넘으면 예전처럼 fatal.
+
+**timeout(`max_dt_s`)은 올리지 않았다.** 올리면 잃어버린 표본 구간을 그대로 적분한다.
+
+### 수정 후 Jetson 실측 (60 초, `--publish-scandots --summary-only`)
+
+```
+low=24850  scan=0  fault=132  fatal=0        map warmup 77 ms
+```
+
+**fatal 0 으로 60 초 완주** (이전에는 즉시 사망). `lowstate gap` fault 는 **0 회** — warmup 이
+스파이크 자체를 없앴다. gyro 보정도 완료(`gyro_calibrated: true`).
+
+### 남은 문제 (다음 세션)
+
+`scan` 이 아직 0 이다. fault 132 는 두 덩어리로 갈린다.
+
+- 0~10 s: `leg_odom_no_reliable_support` — gyro 보정 창 10 초. 정상.
+- 11~22 s: `cloud_too_old` / `cloud_too_old_after_mapping`.
+- **22~60 s: fault 도 scan 도 없는 완전한 침묵.** cloud 를 소비하지 못한다.
+
+lidar 는 60 초 내내 15~16.5 Hz 로 정상 발행되고 header stamp 는 한 번도 멈추거나 되돌아가지
+않는다(`same_stamp=0 back_stamp=0`). 브리지와 **같은 일**을 하는 위 probe 는 tick 을 정확히
+10.0 Hz 로 601 회 돌면서 cloud 나이 max 64.5 ms, map max 49.9 ms 로 전혀 문제가 없다.
+따라서 성능도 센서도 아니고 브리지 구조 쪽이다. probe 와 브리지의 차이는 브리지가
+`low_callback` 에서 500 Hz 로 `leg.update()`(전체 FK)를 공유 RLock 을 쥔 채 도는 것이다 —
+메인 tick 루프의 cloud 소비가 굶는지 확인하는 것이 다음 단계다.
+
 ## 노트북(Galaxy Book4 Pro) 세션 결과 — 2026-09-17, 단계 A-2~A-4
 
 장비 실측: host `seojinwoo`, Ubuntu 22.04.5, Intel Core Ultra 7 155H, x86_64, RAM 30GiB,
