@@ -12,7 +12,9 @@
 #   bash jetson_setup.sh pkgs     # torch / cupy / numpy / scipy ... + unitree_sdk2py
 #   bash jetson_setup.sh smoke    # GPU 단계별 스모크 테스트 (DDS 미사용)
 #   bash jetson_setup.sh all      # check -> unpack -> syslibs -> venv -> dds -> pkgs -> smoke
-#   bash jetson_setup.sh report   # 설치/스모크 결과를 한 파일로 요약 (읽기 전용, 전달용)
+#   bash jetson_setup.sh tests    # 단계 B-4: unit test 를 Jetson 에서 실행 (DDS/로봇 미사용)
+#   bash jetson_setup.sh rxprobe [nic] [sec]  # 단계 C-1: 수신 전용 DDS probe (publisher 없음)
+#   bash jetson_setup.sh report   # 설치/스모크/테스트 결과를 한 파일로 요약 (읽기 전용, 전달용)
 set -euo pipefail
 
 BUNDLE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -108,16 +110,48 @@ do_pkgs() {
   "${PIP[@]}" "$BUNDLE"/wheels/torch-2.0.0+nv23.05-cp38-cp38-linux_aarch64.whl
   "${PIP[@]}" cupy-cuda11x==12.3.0 shapely simple-parsing ruamel.yaml pyyaml
   "${PIP[@]}" --no-deps --no-build-isolation -e "$SRC/unitree_sdk2_python"
-  "$VENV/bin/python" -m pip list 2>/dev/null | grep -iE "^(torch|cupy|numpy|scipy|cyclonedds|unitree|shapely|simple|ruamel|PyYAML) "
+  "$VENV/bin/python" -m pip list 2>/dev/null | grep -iE "^(torch|cupy|numpy|scipy|cyclonedds|unitree|shapely|simple|ruamel|PyYAML)[^ ]* "
 }
 
 do_smoke() {
   # shellcheck disable=SC1091
   source "$ROOT/env.sh"
   local out="$LOG/gpu_smoke_$(hostname)_$(date +%Y%m%d_%H%M%S).log"
-  ( timeout 8 tegrastats --interval 1000 > "$out.tegrastats" 2>&1 & )
+  ( timeout 40 tegrastats --interval 1000 > "$out.tegrastats" 2>&1 & )
+  # 스모크 도중 CPU 를 누가 쓰는지 (우리 python vs 기존 서비스) 구분하기 위한 스냅샷
+  ( sleep 12; top -b -n 1 -o %CPU 2>/dev/null | head -n 16 > "$out.top" ) &
   python "$GO2_PARKOUR/migration/gpu_smoke.py" "$GO2_PARKOUR" "$GO2_EMCUPY" 200 2>&1 | tee "$out"
   echo "log: $out"
+}
+
+do_tests() {
+  # 단계 B-4: 데스크톱과 동일한 소스의 unit test 를 Jetson(Python 3.8, aarch64)에서 실행. DDS/로봇 미사용.
+  # pytest 없이 표준 unittest 로 돈다. 데스크톱 기준: tools/tests 73개 중 2개 오류(둘 다 gitignore 된
+  # captures/ 의 URDF 가 필요한 test_audit_go2_targets), em_sidecar/tests 10개 통과.
+  set +e
+  # shellcheck disable=SC1091
+  source "$ROOT/env.sh"
+  local out="$LOG/unit_tests_$(hostname)_$(date +%Y%m%d_%H%M%S).log"
+  cd "$GO2_PARKOUR"
+  { echo "### tools/tests"; python -m unittest discover -s tools/tests 2>&1
+    echo "### em_sidecar/tests"; python -m unittest discover -s em_sidecar/tests -t . 2>&1; } > "$out"
+  grep -E "^### |^Ran |^OK|^FAILED|^(ERROR|FAIL): " "$out"
+  local unexpected
+  unexpected="$(grep -E "^(ERROR|FAIL): " "$out" | grep -vc "test_audit_go2_targets")"
+  echo "unexpected failures (captures 의존 test_audit_go2_targets 2건 제외): $unexpected"
+  echo "log: $out"
+}
+
+do_rxprobe() {
+  # 단계 C-1: 수신 전용 DDS probe. publisher 를 만들지 않으며 LowCmd/sport 명령을 보내지 않는다.
+  # 사용: bash jetson_setup.sh rxprobe [interface=eth0] [seconds=30]
+  # shellcheck disable=SC1091
+  source "$ROOT/env.sh"
+  local nic="${2:-eth0}" dur="${3:-30}"
+  local out="$LOG/dds_rx_$(hostname)_${nic}_$(date +%Y%m%d_%H%M%S)"
+  ( timeout "$((dur + 5))" tegrastats --interval 1000 > "$out.tegrastats" 2>&1 & )
+  python "$GO2_PARKOUR/tools/dds_rx_probe.py" --interface "$nic" --duration "$dur" --json "$out.json" 2>&1 | tee "$out.log"
+  echo "log: $out.log"
 }
 
 do_report() {
@@ -133,20 +167,23 @@ do_report() {
     echo "== cyclonedds C"; ls "$DDS_PREFIX/lib" 2>&1 | grep ddsc || true
     echo "== env.sh"; cat "$ROOT/env.sh" 2>&1
     echo "== pip packages"; "$VENV/bin/python" -m pip list 2>/dev/null \
-      | grep -iE "^(torch|cupy|numpy|scipy|cyclonedds|unitree|shapely|simple|ruamel|PyYAML|pip|setuptools) " || true
+      | grep -iE "^(torch|cupy|numpy|scipy|cyclonedds|unitree|shapely|simple|ruamel|PyYAML|pip|setuptools)[^ ]* " || true
     echo "== torch openblas resolution"
     ( source "$ROOT/env.sh" && ldd "$VENV/lib/python3.8/site-packages/torch/lib/libtorch_cpu.so" 2>&1 \
         | grep -E "openblas|numa|gfortran|not found" ) || true
     echo "== smoke logs"; ls -la "$LOG" 2>&1 | awk '{print $5, $9}'
     local last; last="$(ls -t "$LOG"/gpu_smoke_*.log 2>/dev/null | grep -v tegrastats | head -1 || true)"
     [ -n "$last" ] && { echo "== last smoke: $last"; grep -E "PASS|FAIL|Error|Traceback" "$last" || tail -20 "$last"; \
-      echo "== tegrastats during smoke"; tail -3 "$last.tegrastats" 2>/dev/null | cut -c1-200; } || echo "no smoke log yet"
+      echo "== tegrastats during smoke"; tail -3 "$last.tegrastats" 2>/dev/null | cut -c1-200; \
+      echo "== top snapshot during smoke (who uses the CPU)"; cut -c1-150 "$last.top" 2>/dev/null; } || echo "no smoke log yet"
   } > "$out" 2>&1
   cat "$out"; echo; echo "saved: $out"
 }
 
 case "${1:-}" in
   report) do_report ;;
+  tests) do_tests ;;
+  rxprobe) do_rxprobe "$@" ;;
   check) do_check ;;
   unpack) do_unpack ;;
   venv) do_venv ;;
@@ -155,5 +192,5 @@ case "${1:-}" in
   smoke) do_smoke ;;
   syslibs) do_syslibs ;;
   all) do_check; do_unpack; do_syslibs; do_venv; do_dds; do_pkgs; do_smoke ;;
-  *) sed -n '2,16p' "$0"; exit 2 ;;
+  *) sed -n '2,18p' "$0"; exit 2 ;;
 esac

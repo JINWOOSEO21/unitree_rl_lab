@@ -84,6 +84,53 @@ def s_mapper():
             f"max {lat_s[-1]:.1f} first {lat[0]:.0f} | torch peak {mem:.0f} MiB (bridge deadline: 200 ms)")
 
 
+def _proc_stat():
+    with open("/proc/stat") as f:
+        v = [int(x) for x in f.readline().split()[1:8]]
+    return sum(v), v[3] + v[4]  # total, idle+iowait
+
+
+def s_cpu_cost():
+    """Separate what THIS process burns from what the rest of the box burns, at the real 10 Hz pace."""
+    import os
+    import numpy as np
+    import torch
+    from go2_sensor_bridge import BaseMapper
+
+    mapper = BaseMapper(emcupy)
+    row = {"frame_id": "odom", "child_frame_id": "base_link",
+           "position": {"x": 0.0, "y": 0.0, "z": 0.3},
+           "orientation": {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0}}
+    xy = np.random.default_rng(1).uniform(-1.5, 1.5, size=(6000, 2))
+    pts = np.column_stack([xy, np.full(len(xy), -0.3)]).astype(np.float32)
+    for _ in range(5):
+        mapper.update(None, row, base_points=pts)
+    ncpu = os.cpu_count() or 1
+
+    def run(n, period):
+        t = os.times(); c0, w0 = t.user + t.system, time.perf_counter()
+        tot0, idle0 = _proc_stat()
+        for _ in range(n):
+            t1 = time.perf_counter()
+            row["position"]["x"] += 0.001
+            mapper.update(None, row, base_points=pts)
+            torch.cuda.synchronize()
+            if period:
+                time.sleep(max(0.0, period - (time.perf_counter() - t1)))
+        t = os.times(); tot1, idle1 = _proc_stat()
+        mine = (t.user + t.system - c0) / (time.perf_counter() - w0)
+        box = ncpu * (1 - (idle1 - idle0) / max(1, tot1 - tot0))
+        return mine, box
+
+    tot0, idle0 = _proc_stat(); time.sleep(2.0); tot1, idle1 = _proc_stat()
+    idle_box = ncpu * (1 - (idle1 - idle0) / max(1, tot1 - tot0))
+    b_mine, b_box = run(100, 0.0)
+    p_mine, p_box = run(50, 0.1)
+    return (f"cores used (this process / whole box of {ncpu}): idle -/{idle_box:.2f} | "
+            f"back-to-back {b_mine:.2f}/{b_box:.2f} | paced 10Hz {p_mine:.2f}/{p_box:.2f} | "
+            f"torch threads {torch.get_num_threads()} OMP_NUM_THREADS={os.environ.get('OMP_NUM_THREADS')}")
+
+
 def s_dds_import():
     import cyclonedds
     from unitree_sdk2py.idl.unitree_go.msg.dds_ import LowState_  # noqa: F401
@@ -100,6 +147,7 @@ def s_dds_import():
 
 
 for name, fn in [("versions", s_versions), ("torch-cuda", s_torch), ("cupy-nvrtc-kernel", s_cupy_kernel),
-                 ("torch-cupy-zero-copy", s_interop), ("dds-import", s_dds_import), ("elevation-mapper", s_mapper)]:
+                 ("torch-cupy-zero-copy", s_interop), ("dds-import", s_dds_import), ("elevation-mapper", s_mapper),
+                 ("cpu-cost", s_cpu_cost)]:
     stage(name, fn)
 print("ALL PASS")

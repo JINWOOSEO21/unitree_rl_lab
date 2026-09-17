@@ -222,6 +222,34 @@ Jetson `check` 1회차(2026-09-17)에서 `python3.8-venv`(ensurepip)와 `libopen
 - venv: `python3.8 -m venv --without-pip` 후 번들의 pip wheel을 직접 실행해 부트스트랩한다.
 - libopenblas: torch wheel의 `DT_NEEDED`를 직접 조사해 시스템에 없을 수 있는 것은 `libopenblas.so.0`, `libnuma.so.1`뿐임을 확인했다(MPI 불필요). `fetch_focal_arm64_debs.py`가 ports.ubuntu.com의 focal arm64 인덱스에서 `.deb`를 받아 SHA256을 대조하고, `jetson_setup.sh syslibs`가 `~/walking/opt/syslibs`에 풀어 시스템에 없는 라이브러리만 링크한다. 시스템에는 설치하지 않으며 `env.sh`의 `LD_LIBRARY_PATH`로만 연결된다.
 
+위 "없음" 판정은 나중에 `jetson_setup.sh`의 버그로 인한 오탐으로 밝혀졌다 (`set -o pipefail` 아래의 `ldconfig -p | grep -q`는 grep이 먼저 끝나면 SIGPIPE로 실패 처리된다. 데스크톱에서 40/40 재현). 수정 후 Jetson에서 `libopenblas.so.0`, `libgfortran.so.5`, `libnuma.so.1`, `libcudnn.so.8` 모두 system으로 판정되고 `ldd`도 `/lib/aarch64-linux-gnu`로 해석된다. 번들 `.deb`는 쓰이지 않으며 `opt/syslibs/lib`는 비어 있다. venv 쪽(ensurepip 없음)은 실제였다.
+
+### Jetson 설치 결과 (2026-09-17, 사용자 실행, `jetson_setup.sh all` → `smoke` → `report`)
+
+```
+PASS versions            python 3.8.10 numpy 1.24.4 scipy 1.10.1 torch 2.0.0+nv23.05 cupy 12.3.0
+PASS torch-cuda          Orin cuda 11.4
+PASS cupy-nvrtc-kernel   runtime 11040 nvrtc ok
+PASS torch-cupy-zero-copy
+PASS dds-import          libddsc: ~/walking/opt/cyclonedds/lib/libddsc.so.0.10.2
+PASS elevation-mapper    scan(132,) valid 132/132, update+sample ms p50 13.4 p95 15.0 max 23.3 first 34
+```
+
+- 지도 update+sample p95 15.0ms / max 23.3ms는 bridge의 cloud/map 200ms deadline 대비 약 8배 여유다 (데스크톱 RTX 3060은 p50 2.1ms). 6000점 합성 cloud 기준이며 실제 LiDAR cloud 크기와 DDS 콜백 부하는 포함하지 않는다.
+- `libddsc`가 `~/walking/opt`의 0.10.2에서 로드됨을 `/proc/self/maps`로 확인했다. `/usr/local`의 0.11이나 ROS 환경의 것이 끼어들지 않는다.
+- **미해결**: 스모크 중 tegrastats에서 CPU 8코어가 모두 100%였다 (1차 조사 유휴 시 5% 안팎). 데스크톱에서는 같은 루프가 연속 1.03코어 / 10Hz 페이스 0.05코어로 재현되지 않는다. aarch64 torch/OpenBLAS 스레드의 busy-wait인지 다른 프로세스인지 구분하기 위해 `gpu_smoke.py`에 `cpu-cost` 단계(이 프로세스 vs 장비 전체 코어 사용량, 10Hz 페이스 포함)와 `top` 스냅샷을 추가했다. 결과를 보기 전에는 `OMP_NUM_THREADS` 등을 바꾸지 않는다.
+
+### 유선 데스크톱 DDS 수신 기준선 (2026-09-17, `tools/dds_rx_probe.py`, enp42s0, 10초, 수신 전용)
+
+| 토픽 | 수신율 | 간격 ms (p50 / p95 / max) | 비고 |
+|---|---|---|---|
+| `rt/lowstate` | 497.6 Hz | 1.99 / 2.5 / 16.6 | tick 역행 0, 반복 9, 최대 step 15. tick은 ms 단위라 호스트 간 공유 ID로 쓸 수 있다 |
+| `rt/utlidar/cloud` | 15.4 Hz | 64.9 / 66.8 / 68.9 | |
+| `rt/utlidar/robot_odom` | 149 Hz | 6.6 / 8.7 / 23.9 | |
+| `rt/parkour/scandots`, `rt/parkour/gyro_bias` | 미수신 | | bridge를 돌리지 않은 상태라 정상 |
+
+Jetson eth0에서 같은 probe(`jetson_setup.sh rxprobe`)를 돌려 이 표와 비교한다. 노트북은 controller가 C++라 `unitree_sdk2py` 환경이 없을 수 있다. 있으면 `python tools/dds_rx_probe.py --interface <nic>`를 쓰고, 없으면 기존 C++ 수신 도구(`go2_scandots_probe`, `go2_gyro_bias_dds_probe`)를 쓰거나 LowState용 C++ probe를 추가한다 (미정).
+
 `smoke`의 `elevation-mapper` 줄에 나오는 update+sample p95/max가 bridge의 cloud/map 200ms deadline 대비 Jetson의 여유를 보여준다. bridge 실행 전에는 `source ~/walking/env.sh`를 적용한다.
 
 ## 알려진 주의점
