@@ -12,6 +12,7 @@
 #   bash jetson_setup.sh pkgs     # torch / cupy / numpy / scipy ... + unitree_sdk2py
 #   bash jetson_setup.sh smoke    # GPU 단계별 스모크 테스트 (DDS 미사용)
 #   bash jetson_setup.sh all      # check -> unpack -> syslibs -> venv -> dds -> pkgs -> smoke
+#   bash jetson_setup.sh report   # 설치/스모크 결과를 한 파일로 요약 (읽기 전용, 전달용)
 set -euo pipefail
 
 BUNDLE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,6 +22,10 @@ DDS_PREFIX="$ROOT/opt/cyclonedds"
 SRC="$ROOT/src"
 LOG="$ROOT/logs"; mkdir -p "$LOG"
 PIP=("$VENV/bin/python" -m pip install --no-index --find-links "$BUNDLE/wheels")
+# pipefail 아래에서 `ldconfig -p | grep -q` 는 grep 이 먼저 끝나면 ldconfig 가 SIGPIPE 로 죽어 오탐(false negative)이 난다.
+# 출력을 한 번만 받아 두고 here-string 으로 검사한다.
+LDCACHE="$(ldconfig -p 2>/dev/null || true)"
+has_syslib() { grep -q -- "$1" <<<"$LDCACHE"; }
 
 write_env() {
   cat > "$ROOT/env.sh" <<EOF
@@ -47,11 +52,11 @@ do_check() {
   [ -x /usr/local/cuda/bin/nvcc ] && echo "ok   nvcc $(/usr/local/cuda/bin/nvcc --version | grep -o 'release [0-9.]*')" || { echo "FAIL nvcc"; bad=1; }
   # torch wheel 의 DT_NEEDED 중 JetPack 기본 설치에 없을 수 있는 것. 시스템에 없으면 번들 .deb 를 풀어서 쓴다.
   for lib in libopenblas.so.0 libgfortran.so.5 libnuma.so.1; do
-    if ldconfig -p | grep -q "$lib"; then echo "ok   $lib (system)"
+    if has_syslib "$lib"; then echo "ok   $lib (system)"
     elif command -v dpkg-deb >/dev/null && ls "$BUNDLE"/debs/*.deb >/dev/null 2>&1; then echo "ok   $lib (system 에 없음 -> 번들 .deb 를 $ROOT/opt/syslibs 에 풀어 사용, sudo 불필요)"
     else echo "FAIL $lib 없음, 번들 debs/ 도 없음"; bad=1; fi
   done
-  ldconfig -p | grep -q 'libcudnn.so.8' && echo "ok   libcudnn 8" || echo "warn libcudnn 8 not in ldconfig"
+  has_syslib "libcudnn.so.8" && echo "ok   libcudnn 8" || echo "warn libcudnn 8 not in ldconfig"
   echo "info free disk: $(df -h --output=avail "$ROOT" | tail -1)   date: $(date -Is) (1970년이어도 오프라인 설치에는 영향 없음)"
   return $bad
 }
@@ -70,7 +75,7 @@ do_syslibs() {
   mkdir -p "$stage" "$lib"
   for d in "$BUNDLE"/debs/*.deb; do dpkg-deb -x "$d" "$stage"; done
   for name in libopenblas.so.0 libgfortran.so.5 libnuma.so.1; do
-    if ldconfig -p | grep -q "$name"; then echo "skip $name (system)"; continue; fi
+    if has_syslib "$name"; then rm -f "$lib/$name"; echo "skip $name (system 것 사용)"; continue; fi
     local src; src="$(find "$stage" -name "$name" | head -1)"
     [ -n "$src" ] || { echo "FAIL $name not found in debs"; return 1; }
     ln -sfn "$(readlink -f "$src")" "$lib/$name"
@@ -115,7 +120,33 @@ do_smoke() {
   echo "log: $out"
 }
 
+do_report() {
+  # 읽기 전용. 설치 결과를 한 파일로 모아 전달용으로 만든다. 일부 항목이 없어도 끝까지 수집한다.
+  set +e +o pipefail
+  local out="$LOG/setup_report_$(hostname)_$(date +%Y%m%d_%H%M%S).txt"
+  {
+    echo "== date $(date -Is) bundle $(grep -o 'unitree_rl_lab=[^ ]*' "$BUNDLE/MANIFEST.txt" 2>/dev/null)"
+    echo "== layout"; ls "$ROOT" "$ROOT/opt" "$ROOT/opt/syslibs/lib" "$SRC" 2>&1
+    echo "== syslibs links"; ls -la "$ROOT/opt/syslibs/lib" 2>&1 | awk '{print $9, $10, $11}'
+    echo "== system has?"; for l in libopenblas.so.0 libgfortran.so.5 libnuma.so.1 libcudnn.so.8; do
+      has_syslib "$l" && echo "system   $l" || echo "absent   $l"; done
+    echo "== cyclonedds C"; ls "$DDS_PREFIX/lib" 2>&1 | grep ddsc || true
+    echo "== env.sh"; cat "$ROOT/env.sh" 2>&1
+    echo "== pip packages"; "$VENV/bin/python" -m pip list 2>/dev/null \
+      | grep -iE "^(torch|cupy|numpy|scipy|cyclonedds|unitree|shapely|simple|ruamel|PyYAML|pip|setuptools) " || true
+    echo "== torch openblas resolution"
+    ( source "$ROOT/env.sh" && ldd "$VENV/lib/python3.8/site-packages/torch/lib/libtorch_cpu.so" 2>&1 \
+        | grep -E "openblas|numa|gfortran|not found" ) || true
+    echo "== smoke logs"; ls -la "$LOG" 2>&1 | awk '{print $5, $9}'
+    local last; last="$(ls -t "$LOG"/gpu_smoke_*.log 2>/dev/null | grep -v tegrastats | head -1 || true)"
+    [ -n "$last" ] && { echo "== last smoke: $last"; grep -E "PASS|FAIL|Error|Traceback" "$last" || tail -20 "$last"; \
+      echo "== tegrastats during smoke"; tail -3 "$last.tegrastats" 2>/dev/null | cut -c1-200; } || echo "no smoke log yet"
+  } > "$out" 2>&1
+  cat "$out"; echo; echo "saved: $out"
+}
+
 case "${1:-}" in
+  report) do_report ;;
   check) do_check ;;
   unpack) do_unpack ;;
   venv) do_venv ;;
@@ -124,5 +155,5 @@ case "${1:-}" in
   smoke) do_smoke ;;
   syslibs) do_syslibs ;;
   all) do_check; do_unpack; do_syslibs; do_venv; do_dds; do_pkgs; do_smoke ;;
-  *) sed -n '2,15p' "$0"; exit 2 ;;
+  *) sed -n '2,16p' "$0"; exit 2 ;;
 esac
