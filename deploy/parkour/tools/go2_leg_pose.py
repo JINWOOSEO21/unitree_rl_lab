@@ -4,6 +4,7 @@ Local position starts at zero; axes use the LowState IMU orientation. No sport
 pose, IMU-site translation, or height guess is used. This is a diagnostic pose,
 not a calibrated hardware odometry solution.
 """
+from collections import deque
 from pathlib import Path
 import sys
 
@@ -19,11 +20,15 @@ from policy_input_guard import GuardConfig, validate_lowstate
 
 class LegPose:
     def __init__(self, contract_dir=ROOT / 'contract', contact_threshold=20.0,
-                 calibration_seconds=10.0):
+                 calibration_seconds=10.0, max_gaps=4, gap_window_s=30.0):
         if not np.isfinite(contact_threshold) or contact_threshold < 0:
             raise ValueError('leg contact threshold must be finite and non-negative')
         if not np.isfinite(calibration_seconds) or calibration_seconds < 0:
             raise ValueError('calibration duration must be finite and non-negative')
+        if max_gaps < 0 or not np.isfinite(gap_window_s) or gap_window_s <= 0:
+            raise ValueError('gap budget must be non-negative over a positive window')
+        self.max_gaps = int(max_gaps)
+        self.gap_window_s = float(gap_window_s)
         self.calibration_seconds = float(calibration_seconds)
         self.gyro_bias = np.zeros(3)
         self.calibrated = calibration_seconds == 0  # Explicit offline baseline only.
@@ -37,6 +42,8 @@ class LegPose:
                                     LegOdomCfg(contact_force_thr=contact_threshold))
         self.last_tick = None
         self.first_tick = None
+        self.gaps = 0
+        self._gap_ticks = deque()
 
     def _calibrate(self, t, q, quat, gyro, force):
         """One stationary startup window; freeze bias thereafter, including in turns.
@@ -75,18 +82,51 @@ class LegPose:
             self.calibrated = True
             self._calibration = None
 
+    def _note_gap(self, tick, gap_s):
+        """Survive one dropped stretch of LowState; refuse to limp through a stream of them.
+
+        A single gap is recoverable and does happen: the map backend pays a one-time CUDA
+        JIT on its first update (207 ms on an Orin NX against a 31 ms median) and can starve
+        the DDS reader while it holds the GIL. Killing the bridge for that costs a whole run,
+        so absorb it -- LegOdometry.step already skips the velocity update across a dt this
+        large, and resume_after_gap clears the stale foot references it would otherwise trust.
+
+        What the estimator cannot do is tell the caller the map is now wrong. Position is held
+        across the gap instead of integrated, so the robot's real travel while we were blind
+        is missing from it, and everything already accumulated in the map is offset by exactly
+        that much. The caller must rebuild the map; that is what the returned gap reports.
+
+        Repeated gaps are a different failure. Each one throws the map away, so a map that
+        never survives long enough to be useful is worse than a clean stop -- escalate.
+        """
+        self._gap_ticks.append(tick)
+        while self._gap_ticks and (tick-self._gap_ticks[0])*.001 > self.gap_window_s:
+            self._gap_ticks.popleft()
+        self.gaps += 1
+        if len(self._gap_ticks) > self.max_gaps:
+            raise RuntimeError(
+                f'leg LowState gap {gap_s*1000:.0f} ms: {len(self._gap_ticks)} gaps within '
+                f'{self.gap_window_s:.0f} s; restart bridge/map required')
+        # The gyro is unmeasured across the gap, so any calibration window spanning it would
+        # weight one sample over the whole hole. Start the stationary window over.
+        self._calibration = None
+        self.estimator.resume_after_gap()
+        return gap_s
+
     def update(self, low, tick):
         validate_lowstate(low, GuardConfig())
         tick = int(tick)
         if tick < 0:
             raise ValueError('negative LowState tick')
+        gap_s = None
         if self.last_tick is not None:
             if tick < self.last_tick:
                 raise RuntimeError('leg LowState clock regressed; restart bridge/map required')
             if tick == self.last_tick:
                 return None  # Never refresh pose age with a duplicate source sample.
-            if (tick-self.last_tick)*.001 > self.estimator.cfg.max_dt_s:
-                raise RuntimeError('leg LowState gap too large; restart bridge/map required')
+            gap = (tick-self.last_tick)*.001
+            if gap > self.estimator.cfg.max_dt_s:
+                gap_s = self._note_gap(tick, gap)
         if self.first_tick is None:
             self.first_tick = tick
         q = np.asarray([m['q'] for m in low['motor_state'][:12]])[self.joints]
@@ -107,6 +147,9 @@ class LegPose:
                 'position':dict(zip(('x','y','z'), position.tolist())),
                 'orientation':dict(zip(('w','x','y','z'), quat.tolist())),
                 'source':'leg', 'source_tick':tick,
+                # Not None only on the sample that closed a gap: the map accumulated before
+                # it no longer lines up with this pose and must be rebuilt (see _note_gap).
+                'pose_gap_s':gap_s, 'pose_gaps':self.gaps,
                 'reliable_feet':self.estimator.last_n_both,
                 'branch':self.estimator.last_branch,
                 'gyro_calibrated':self.calibrated,

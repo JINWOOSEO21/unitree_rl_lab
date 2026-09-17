@@ -150,6 +150,28 @@ class LegOdometry:
         self.last_n_both = 0
         self.last_branch = 0  # 0 skip, 1 leg, 2 hold, 4 zero
 
+    def resume_after_gap(self) -> None:
+        """관측이 끊겼던 구간 이전의 발 상태를 잊는다 — 위치(self.pos)는 유지한다.
+
+        step() 은 dt 가 max_dt_s 를 넘으면 그 구간의 속도 갱신을 이미 건너뛰지만
+        _contact_since 는 그대로 둔다. 그래서 구멍 직전에 안착해 있던 발은 구멍
+        **직후에 곧바로** 정지 발로 쓰인다 — 그 사이에 떼었다 다시 딛었을 수 있는데도.
+        막 닿은 발을 정지 발로 믿으면 base 가 −2~−4 m/s 로 계산된다 (모듈 설명 참조).
+
+        그래서 모든 발을 contact_settle_s 만큼 다시 안착시키고, 직전 속도도 버린다.
+        그 속도는 구멍 이전의 운동이라 구멍을 건너 적분하면 안 된다.
+
+        self.pos 는 건드리지 않는다. odom 프레임 원점이 튀면 지도가 1 m 불연속
+        검사에 걸린다. 구멍 동안 실제로 이동한 거리는 그냥 잃는다 — 그래서 호출자가
+        지도를 다시 만들어야 한다.
+        """
+        self.vel = np.zeros(3)
+        self._contact_since = np.full(4, np.nan)
+        self._last_above = np.full(4, -np.inf)
+        self._force_lp = None
+        self._prev_reliable = np.zeros(4, dtype=bool)
+        self._t_last_contact = None
+
     def feet_base(self, q_il: np.ndarray) -> np.ndarray:
         """발 4개의 base 프레임 위치 (4,3), IsaacLab 발 순서."""
         P, _ = self.kin.link_poses_base(q_il)

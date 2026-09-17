@@ -51,6 +51,67 @@ class SensorBridgeTest(unittest.TestCase):
                           'invalid_scan':'invalid policy scan'}[fault]
                 self.assertTrue(any(e.get('reason')==expected for e in events),events)
 
+    def test_lowstate_gap_rebuilds_the_map_without_killing_the_bridge(self):
+        """The map accumulated before a gap is offset by travel the pose never integrated."""
+        callbacks={}
+        def low_at(tick):
+            return NS(tick=tick,imu_state=NS(quaternion=[1,0,0,0],gyroscope=[0,0,0]),
+                      motor_state=[NS(q=0.,dq=0.) for _ in range(20)],foot_force=[100]*4)
+        class Sub:
+            def __init__(self,topic,typ):self.topic=topic
+            def Init(self,callback,queue):
+                callbacks[self.topic]=callback
+                callback(low_at(100))
+                callback(low_at(380))  # 280 ms hole: the startup spike seen on the Jetson
+            def Close(self):pass
+        deps=(lambda *args:None,Sub,object,object,object)
+        events=[]
+        with patch.object(bridge,'dependencies',return_value=deps), \
+             patch.object(bridge,'BaseMapper') as mapper, \
+             patch.object(bridge,'ScandotsOutput') as output, patch.object(bridge,'GyroBiasOutput'):
+            code=bridge.run('test',0,.3,Path('.'),events.append,publish_scandots=True)
+        self.assertEqual(code,0)  # degraded, not fatal
+        mapper.return_value.discard_map.assert_called_once()
+        output.return_value.invalidate.assert_called()
+        self.assertFalse(any(e['kind']=='fatal' for e in events),events)
+        self.assertTrue(any(e['kind']=='fault' and 'lowstate gap 280 ms' in e['reason']
+                            for e in events),events)
+
+    def test_map_kernels_are_warmed_before_any_subscriber_exists(self):
+        """A cold first update() holds the GIL long enough to open the gap above."""
+        order=[]
+        class Sub:
+            def __init__(self,topic,typ):order.append('subscribe')
+            def Init(self,callback,queue):pass
+            def Close(self):pass
+        deps=(lambda *args:order.append('participant'),Sub,object,object,object)
+        with patch.object(bridge,'dependencies',return_value=deps), \
+             patch.object(bridge,'BaseMapper') as mapper:
+            mapper.return_value.warmup.side_effect=lambda:order.append('warmup')
+            bridge.run('test',0,.001,Path('.'),lambda e:None)
+        self.assertEqual(order[0],'warmup',order)
+
+    def test_warmup_leaves_no_synthetic_terrain_or_pose_behind(self):
+        mapper=object.__new__(bridge.BaseMapper)
+        mapper.backend=Mock()
+        mapper.torch=Mock()
+        mapper.last_position=None
+        with patch.object(bridge.BaseMapper,'update') as update:
+            mapper.warmup()
+        update.assert_called_once()
+        self.assertIsNone(update.call_args.args[0])  # synthetic points, never a real cloud
+        mapper.backend.clear.assert_called_once_with([0])
+        self.assertIsNone(mapper.last_position)
+
+    def test_warmup_failure_is_reported_but_does_not_stop_startup(self):
+        mapper=object.__new__(bridge.BaseMapper)
+        mapper.backend=Mock()
+        mapper.torch=Mock()
+        mapper.last_position=None
+        with patch.object(bridge.BaseMapper,'update',side_effect=ValueError('policy scan')):
+            mapper.warmup()  # must not raise: warmup is an optimisation, not a precondition
+        mapper.backend.clear.assert_called_once_with([0])
+
     def test_discard_clears_backend_without_losing_pose_continuity(self):
         mapper = object.__new__(bridge.BaseMapper)
         mapper.backend = Mock()

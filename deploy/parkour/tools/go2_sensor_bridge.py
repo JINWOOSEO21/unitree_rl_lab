@@ -20,7 +20,7 @@ import time
 import numpy as np
 
 from replay_go2_base_scan import (
-    PARKOUR_ROOT, _load_backend, backend_input_from_base_cloud, odom_pose,
+    EXPECTED_FRAME, PARKOUR_ROOT, _load_backend, backend_input_from_base_cloud, odom_pose,
     validate_policy_scan, Go2Kinematics, quat_to_mat, yaw_from_quat,
 )
 from em_sidecar.go2_cloud import RAW_FRAME, raw_cloud_to_base
@@ -86,6 +86,40 @@ class BaseMapper:
         # Keep the last pose so clearing cannot bypass the discontinuity check.
         self.backend.clear([0])
 
+    def warmup(self):
+        """Pay the backend's one-time CUDA/CuPy JIT before any subscriber exists.
+
+        The first update() compiles the map kernels: 207 ms measured on the Jetson Orin NX
+        against a 31 ms steady-state median. Left until the tick loop, that call holds the
+        GIL long enough to starve the DDS reader thread and open a >100 ms hole in
+        rt/lowstate, which the leg estimator then reports as a gap. Run it here on a
+        synthetic flat cloud, while there is no reader thread to starve, and throw the
+        result away so the live map still starts empty.
+
+        Warmup is an optimisation, never a precondition. The scan it produces is meaningless,
+        so a failure to validate it must not stop the bridge from starting; report it on
+        stderr and carry on with cold kernels.
+        """
+        rng = np.random.default_rng(0)
+        xy = rng.uniform(-1.5, 1.5, size=(4096, 2))
+        points = np.column_stack([xy, np.full(len(xy), -0.30)]).astype(np.float32)
+        row = {'frame_id': 'odom', 'child_frame_id': EXPECTED_FRAME,
+               'position': {'x': 0.0, 'y': 0.0, 'z': 0.30},
+               'orientation': {'w': 1.0, 'x': 0.0, 'y': 0.0, 'z': 0.0}}
+        started = time.perf_counter()
+        error = None
+        try:
+            self.update(None, row, base_points=points)
+        except Exception as exc:
+            error = f'{type(exc).__name__}: {exc}'
+        try:
+            self.torch.cuda.synchronize()
+        finally:
+            self.backend.clear([0])
+            self.last_position = None  # A synthetic pose must not gate the first live update.
+        print(f'map warmup {(time.perf_counter()-started)*1e3:.0f} ms'
+              + (f' (kernels may still be cold: {error})' if error else ''))
+
     def update(self, cloud, row, base_points=None):
         points = raw_cloud_to_base(cloud) if base_points is None else base_points
         position, quat = odom_pose(row)
@@ -125,6 +159,8 @@ def run(interface, domain, duration, emcupy_root, emit, odom_source='leg', leg_c
         raise ValueError('odom source must be leg or robot')
     initialize, subscriber, low_type, cloud_type, odom_type = dependencies()
     mapper = BaseMapper(emcupy_root)
+    # Before any subscriber exists, so the JIT cannot starve the DDS reader. See warmup().
+    mapper.warmup()
     leg = LegPose(contact_threshold=leg_contact_threshold) if odom_source == 'leg' else None
     lock = threading.RLock()
     poses = deque(maxlen=2000)
@@ -136,6 +172,7 @@ def run(interface, domain, duration, emcupy_root, emit, odom_source='leg', leg_c
     generation = [0]
     last_low = [None, None]  # receipt, unique tick
     last_support = [False]
+    rebuild_map = [False]  # set by the reader thread, acted on by the tick loop (GPU work)
 
     def failure(kind, reason):
         with lock:
@@ -156,6 +193,7 @@ def run(interface, domain, duration, emcupy_root, emit, odom_source='leg', leg_c
             low = low_row(msg)
             validate_lowstate(low, GuardConfig())
             pose = None
+            gap_s = None
             with lock:
                 if last_low[1] is not None and int(msg.tick) < last_low[1]:
                     raise RuntimeError('LowState source clock regressed; restart required')
@@ -165,6 +203,9 @@ def run(interface, domain, duration, emcupy_root, emit, odom_source='leg', leg_c
                     pose = leg.update(low, msg.tick)
                     if pose is not None:
                         poses.append((now, pose))
+                        gap_s = pose['pose_gap_s']
+                        if gap_s is not None:
+                            rebuild_map[0] = True
                         if last_support[0] and not pose['pose_valid']:
                             generation[0] += 1
                         last_support[0] = pose['pose_valid']
@@ -175,6 +216,11 @@ def run(interface, domain, duration, emcupy_root, emit, odom_source='leg', leg_c
             if pose is not None:
                 event['leg_odometry'] = pose
             emit(event)
+            if gap_s is not None:
+                # Degraded, not fatal: bumps generation and invalidates the current output,
+                # which is what a pose that skipped a stretch of travel deserves.
+                failure('fault', f'lowstate gap {gap_s*1000:.0f} ms '
+                                 f'(#{pose["pose_gaps"]}); rebuilding map from next cloud')
         except Exception as exc:
             failure('fatal' if leg is not None else 'fault', f'low: {exc}')
 
@@ -230,6 +276,16 @@ def run(interface, domain, duration, emcupy_root, emit, odom_source='leg', leg_c
                 item = latest[0]
                 pose_snapshot = list(poses)
                 version = generation[0]
+                rebuild = rebuild_map[0]
+                rebuild_map[0] = False
+            if rebuild:
+                # Everything in the map predates a stretch of travel the pose never
+                # integrated, so it is offset by that unmeasured distance. Drop it and let
+                # the next cloud refill it, exactly as the cloud-fault path does.
+                try:
+                    mapper.discard_map()
+                except Exception as exc:
+                    failure('fatal', f'map reset failed: {exc}')
             if bias_output is not None and loop_now >= next_bias:
                 try:
                     with lock:

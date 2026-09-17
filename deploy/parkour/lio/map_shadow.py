@@ -14,7 +14,8 @@ def run(interface,domain,duration,root,emit,publish_scandots,topic):
     from tools.policy_input_guard import GuardConfig,validate_lowstate
     from unitree_sdk2py.idl.std_msgs.msg.dds_ import String_
     initialize,subscriber,low_type,cloud_type,_=dependencies()
-    mapper=BaseMapper(root);poses=PoseBuffer();clouds=deque(maxlen=128);lock=threading.RLock()
+    mapper=BaseMapper(root);mapper.warmup()  # JIT before any reader thread can be starved
+    poses=PoseBuffer();clouds=deque(maxlen=128);lock=threading.RLock()
     fatal=threading.Event();generation=[0];last_low=[0,None];last_cloud=[None];subs=[];output=None;dirty=[False];last_pose_reason=[None]
     def fault(reason,terminal=False):
         with lock:

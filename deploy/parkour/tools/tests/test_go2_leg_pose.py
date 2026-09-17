@@ -42,13 +42,51 @@ class LegPoseTest(unittest.TestCase):
         np.testing.assert_array_equal(args[2],[1,0,0,0])
         np.testing.assert_array_equal(args[4],[2,1,4,3])
 
-    def test_duplicate_does_not_step_and_clock_faults_require_restart(self):
-        for next_tick in (99,201):
-            adapter=LegPose(calibration_seconds=0); adapter.update(low(),100)
-            with patch.object(adapter.estimator,'step') as step:
-                self.assertIsNone(adapter.update(low(),100))
-                step.assert_not_called()
-            with self.assertRaises(RuntimeError): adapter.update(low(),next_tick)
+    def test_duplicate_does_not_step_and_regressed_clock_requires_restart(self):
+        adapter=LegPose(calibration_seconds=0); adapter.update(low(),100)
+        with patch.object(adapter.estimator,'step') as step:
+            self.assertIsNone(adapter.update(low(),100))
+            step.assert_not_called()
+        with self.assertRaises(RuntimeError): adapter.update(low(),99)
+
+    def test_one_gap_reports_itself_and_the_stream_recovers(self):
+        """A single gap must not wedge the adapter: every later sample was still fine."""
+        adapter=LegPose(calibration_seconds=0)
+        for tick in range(100,200,2): adapter.update(low(),tick)
+        self.assertTrue(adapter.update(low(),200)['pose_valid'])
+        # 280 ms hole, the startup spike measured on the Jetson.
+        gapped=adapter.update(low(),480)
+        self.assertAlmostEqual(gapped['pose_gap_s'],.28)
+        self.assertFalse(gapped['pose_valid'])   # the map must not be fed across the hole
+        self.assertEqual(adapter.last_tick,480)  # ...and the clock must have advanced
+        for tick in range(482,600,2): result=adapter.update(low(),tick)
+        self.assertIsNone(result['pose_gap_s'])
+        self.assertTrue(result['pose_valid'])
+        self.assertEqual(result['pose_gaps'],1)
+
+    def test_gap_holds_position_instead_of_integrating_across_it(self):
+        """Position may lose the travel, but must never jump: the map checks 1 m continuity."""
+        adapter=LegPose(calibration_seconds=0)
+        for tick in range(100,200,2): adapter.update(low(),tick)
+        before=list(adapter.update(low(),200)['position'].values())
+        after=list(adapter.update(low(),480)['position'].values())
+        np.testing.assert_allclose(after,before,atol=1e-12)
+
+    def test_repeated_gaps_exhaust_the_budget_and_require_restart(self):
+        adapter=LegPose(calibration_seconds=0,max_gaps=2,gap_window_s=30.)
+        tick=100; adapter.update(low(),tick)
+        for _ in range(2):
+            tick+=200; adapter.update(low(),tick)
+        tick+=200
+        with self.assertRaises(RuntimeError): adapter.update(low(),tick)
+
+    def test_gaps_spread_beyond_the_window_stay_recoverable(self):
+        adapter=LegPose(calibration_seconds=0,max_gaps=2,gap_window_s=30.)
+        tick=100; adapter.update(low(),tick)
+        for _ in range(6):
+            tick+=40_000  # 40 s apart: only one gap is ever inside a 30 s window
+            self.assertIsNotNone(adapter.update(low(),tick)['pose_gap_s'])
+        self.assertEqual(adapter.gaps,6)
 
     def test_bad_lowstate_cannot_mutate_estimator(self):
         adapter=LegPose(calibration_seconds=0); row=low(); row['motor_state'][0]['q']=float('nan')
