@@ -7,7 +7,9 @@
 #   bash notebook_setup.sh sdk       # unitree_sdk2 를 $SDK_PREFIX 에 설치 (sudo 불필요)
 #   bash notebook_setup.sh build     # go2_ctrl 새 build (데스크톱 build 디렉터리 복사 금지)
 #   bash notebook_setup.sh test      # CTest (키보드 PTY, held heading, shutdown, gyro bias 포함)
+#   bash notebook_setup.sh probe     # 읽기 전용 X11 a/d hold 진단 (DDS/모터 출력 없음)
 #   bash notebook_setup.sh manifest  # 버전/hash 기록
+#   bash notebook_setup.sh run <nic> # 실제 LowCmd. 사용자 지시가 있을 때만.
 set -euo pipefail
 
 CODES="${CODES:-$HOME/workspace/codes}"
@@ -46,12 +48,37 @@ sdk)
   ;;
 build)
   # CMakeLists 의 /usr/local/include/ddscxx 경로는 없으면 무시된다. prefix 를 플래그로 연결한다.
+  # --disable-new-dtags 는 DT_RUNPATH 대신 DT_RPATH 를 쓴다. ROS 2 가 설치된 장비에서는
+  # .bashrc 의 setup.bash 가 LD_LIBRARY_PATH 에 /opt/ros/<distro>/lib/x86_64-linux-gnu 를 넣고,
+  # loader 는 LD_LIBRARY_PATH 를 DT_RUNPATH 보다 먼저 본다. 그러면 ROS 의 libddsc.so.0 이
+  # SDK 것보다 우선 잡혀서 ROS Cyclone C 코어 + unitree ddscxx C++ 바인딩이 섞인다
+  # (ROS 는 libddscxx 를 배포하지 않으므로 ddscxx 만 prefix 에서 온다).
+  # DT_RPATH 는 LD_LIBRARY_PATH 보다 먼저 검색되므로 ROS 를 source 한 셸에서도 SDK 것이 잡힌다.
   cmake -S "$GO2" -B "$GO2/build" \
+    -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CXX_FLAGS="-I$SDK_PREFIX/include -I$SDK_PREFIX/include/ddscxx" \
-    -DCMAKE_EXE_LINKER_FLAGS="-L$SDK_PREFIX/lib -Wl,-rpath,$SDK_PREFIX/lib"
+    -DCMAKE_EXE_LINKER_FLAGS="-L$SDK_PREFIX/lib -Wl,--disable-new-dtags -Wl,-rpath,$SDK_PREFIX/lib"
   cmake --build "$GO2/build" -j"$(nproc)"
-  echo "--- go2_ctrl 공유 라이브러리 해석 (not found 가 없어야 함)"
+  echo "--- go2_ctrl 공유 라이브러리 해석 (not found 없이 전부 $SDK_PREFIX 여야 함)"
   ldd "$GO2/build/go2_ctrl" | grep -E "ddsc|onnxruntime|not found" || true
+  ;;
+probe)
+  # 모터 출력/DDS 없는 읽기 전용 X11 입력 진단. 반드시 포커스된 터미널에서 직접 실행한다.
+  # --keyboard-check 는 Policy 상태가 아니면 a/d 조향을 통과시키지 않아 이 검증을 못 한다.
+  "$GO2/build/go2_keyboard_x11_probe"
+  ;;
+run)
+  # 실제 LowCmd 를 보낸다. 사용자가 명시적으로 지시할 때만 실행한다.
+  NET="${2:?사용법: notebook_setup.sh run <network-interface>}"
+  LOGDIR="${LOGDIR:-$HOME/go2_logs}"; mkdir -p "$LOGDIR"
+  RUN_ID="$(date +%Y%m%d_%H%M%S_%N)"
+  LOG="$LOGDIR/go2_ctrl_${RUN_ID}.log"
+  echo "run_id=$RUN_ID host=$(hostname) net=$NET wall=$(date -Is) log=$LOG"
+  { echo "run_id=$RUN_ID host=$(hostname) net=$NET"
+    echo "wall=$(date -Is) monotonic_ns=$(awk '{printf "%.0f", $1*1e9}' /proc/uptime)"
+    timedatectl show -p NTPSynchronized --value 2>/dev/null | sed 's/^/ntp_synchronized=/'
+  } | tee "$LOG"
+  "$GO2/build/go2_ctrl" --network "$NET" --keyboard 2>&1 | tee -a "$LOG"
   ;;
 test)
   (cd "$GO2/build" && ctest --output-on-failure)
@@ -67,5 +94,5 @@ manifest)
      thirdparty/onnxruntime-linux-x64-1.22.0/lib/libonnxruntime.so.1.22.0)
   ;;
 *)
-  sed -n '2,11p' "$0"; exit 2 ;;
+  sed -n '2,12p' "$0"; exit 2 ;;
 esac

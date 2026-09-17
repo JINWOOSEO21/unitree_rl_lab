@@ -32,6 +32,10 @@ bool Go2HeldHeadingInput::available() const
     return impl_->display && impl_->left && impl_->right &&
            impl_->terminal != None && impl_->terminal != PointerRoot;
 }
+bool Go2HeldHeadingInput::focused() const
+{
+    return available() && impl_->focused();
+}
 void Go2HeldHeadingInput::arm()
 {
     impl_->armed = available() && impl_->focused();
