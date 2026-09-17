@@ -88,7 +88,15 @@ def s_dds_import():
     import cyclonedds
     from unitree_sdk2py.idl.unitree_go.msg.dds_ import LowState_  # noqa: F401
     from unitree_sdk2py.core.channel import ChannelFactoryInitialize  # noqa: F401  (imported, NOT called)
-    return f"cyclonedds {getattr(cyclonedds, '__version__', '?')} + unitree_sdk2py import only, no participant created"
+    # Another CycloneDDS on the box (ROS, /usr/local) must not be the one that got loaded.
+    import os
+    with open("/proc/self/maps") as f:
+        loaded = sorted({line.split()[-1] for line in f if "libddsc" in line})
+    home = os.environ.get("CYCLONEDDS_HOME")
+    if home and loaded and not all(os.path.realpath(p).startswith(os.path.realpath(home)) for p in loaded):
+        raise RuntimeError(f"libddsc loaded from {loaded}, expected under CYCLONEDDS_HOME={home}")
+    return (f"cyclonedds {getattr(cyclonedds, '__version__', '?')} + unitree_sdk2py import only, "
+            f"no participant created | libddsc: {loaded or 'not mapped yet'}")
 
 
 for name, fn in [("versions", s_versions), ("torch-cuda", s_torch), ("cupy-nvrtc-kernel", s_cupy_kernel),
