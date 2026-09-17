@@ -55,6 +55,10 @@ add_executable(go2_held_heading_tests tests/test_held_heading_input.cpp src/Held
 target_compile_options(go2_held_heading_tests PRIVATE -UNDEBUG)
 add_test(NAME go2_held_heading_tests COMMAND go2_held_heading_tests)
 
+# Manual read-only check of a/d hold/release against a real X server (no DDS, no LowCmd).
+# --keyboard-check cannot cover this: steering is gated on the Policy state.
+add_executable(go2_keyboard_x11_probe tools/keyboard_x11_probe.cpp src/HeldHeadingInput.cpp)
+
 add_executable(go2_shutdown_tests tests/test_shutdown_control.cpp)
 target_compile_options(go2_shutdown_tests PRIVATE -UNDEBUG)
 add_test(NAME go2_shutdown_tests COMMAND go2_shutdown_tests)

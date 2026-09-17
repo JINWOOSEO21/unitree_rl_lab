@@ -10,6 +10,9 @@ public:
     Go2HeldHeadingInput();
     ~Go2HeldHeadingInput();
     bool available() const;
+    // Whether the latched terminal still holds X input focus. Diagnostics only:
+    // poll() already drops held keys on focus loss without consulting this.
+    bool focused() const;
     void arm();
     void clear();
     Go2HeldHeadingKeys poll();
