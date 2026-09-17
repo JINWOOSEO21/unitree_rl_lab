@@ -13,8 +13,18 @@ each -- and report the counters every second:
 
 time.sleep is the loop's heartbeat because the loop calls it exactly once per iteration and
 nothing else in the bridge calls it at all. (time.monotonic would not do: emit() calls it
-once per LowState event, so 500 Hz of noise would bury the loop's 10 Hz.) Patching it does
-reach any other library that sleeps, so cross-check a suspicious count against --stacks.
+once per LowState event, so 500 Hz of noise would bury the loop's 10 Hz.)
+
+Patching time.sleep is global, so CycloneDDS's own teardown threads call the wrapper too.
+It must therefore never take a lock: an earlier version did, and with this module's daemon
+reporter holding that same lock the bridge deadlocked for ~55 s on shutdown -- a defect
+that existed only while measuring. The counters below are plain += under the GIL, which can
+drop an increment at a bytecode boundary but can neither deadlock nor crash. For a rate
+readout that trade is right; do not read these as exact totals.
+
+--stacks dumps threads that are executing inside C extensions, which has been seen to
+segfault this process mid-run on the Jetson. Use it to locate a stall, never in a run whose
+exit code or shutdown timing you intend to trust.
 
 Nothing here changes the bridge's behaviour; every wrapper calls straight through. With
 --stacks it also dumps all thread stacks periodically, which names the exact line a stalled
@@ -51,8 +61,7 @@ def main() -> int:
 
     def counted(name, function):
         def wrapper(*a, **kw):
-            with lock:
-                counts[name] += 1
+            counts[name] += 1  # deliberately lock-free: see the module docstring
             return function(*a, **kw)
         return wrapper
 
