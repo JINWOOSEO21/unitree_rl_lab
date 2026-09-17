@@ -1,7 +1,8 @@
 # Jetson + Galaxy Book4 Pro 이식: manifest와 진행 기록
 
-계획: `../migration_jetson_galaxybook_plan.md`. 이 문서는 2026-09-17 데스크톱 세션에서 실측한 값만 기록한다.
-로봇 제어, DDS 송신, Jetson/노트북 설치는 이 세션에서 수행하지 않았다.
+계획: `../migration_jetson_galaxybook_plan.md`. 이 문서는 실측한 값만 기록한다 (2026-09-17 데스크톱 →
+노트북 → Jetson 세션 순서로 누적). 각 절의 제목에 어느 장비/세션의 결과인지 표시한다.
+로봇 제어와 DDS 송신은 아직 어느 세션에서도 수행하지 않았다.
 
 ## 결정 사항 (2026-09-17 사용자 확인)
 
@@ -169,20 +170,74 @@ a=0 d=0 -> +0.0000 rad (+0.0 deg)   [unfocused]
 상태를 반영하며 autorepeat 의 영향을 받지 않는다. 그 1회는 손가락이 잠깐 떨어진 것으로 본다.
 조향이 떨리는 현상은 없다. (단계 E 의 첫 Policy 주행에서 한 번 더 눈으로 확인하면 좋다.)
 
+## Jetson 1차 조사 결과 (2026-09-17, `jetson_survey.sh`)
+
+원본은 `deploy/parkour/captures/migration/`(gitignore)에 보관한다. Jetson 작업 폴더는 `~/walking`이다.
+
+| 항목 | 실측값 |
+|---|---|
+| 플랫폼 | L4T R35.3.1 (JetPack 5.1.1), Ubuntu 20.04.5 aarch64, kernel 5.10.104-tegra |
+| GPU 스택 | CUDA 11.4.19 (nvcc V11.4.315), cuDNN 8.6.0.166, TensorRT 8.5.2.2 |
+| Python | 시스템 3.8.10 (pip 20.0.2), python3.9 존재, venv 가능, `~/.local/bin/uv` 설치됨. conda 없음 |
+| 기존 GPU/DDS 패키지 | torch, cupy, cyclonedds, unitree_sdk2py 모두 없음. 시스템 numpy 1.17.4, scipy 1.3.3 |
+| 빌드 도구 | gcc/g++ 11.4.0, cmake 3.16.3, git 2.25.1 |
+| 자원 | 8코어, RAM 15GiB 중 1.3GiB 사용, / 여유 248GiB, MAXN, 유휴 tj 약 58°C, GPU 0% |
+| 네트워크 | eth0=192.168.123.18/24, default via 192.168.123.1. 인터넷 도달성은 1차 스크립트 결함으로 미확인 |
+| DDS | `/usr/local/lib/libddsc.so.0.11.0` + `libunitree_sdk2.a` 설치됨, `~/cyclonedds`, `~/cyclonedds_ws` 존재. 전역 `CYCLONEDDS_URI`가 eth0로 설정됨 |
+
+이식에 영향을 주는 발견:
+
+1. **시계가 1970-02-08이고 NTP 미동기, RTC도 1970년이다.** 인터넷이 되더라도 HTTPS 인증서 검증이 실패해 pip/git이 막힐 수 있다. 계획 D-5의 wall+monotonic anchor 분석에서도 Jetson wall time은 신뢰할 수 없으므로 LowState tick 같은 공유 ID를 기준으로 삼는다.
+2. **CycloneDDS C 라이브러리가 0.11 계열이다.** unitree_sdk2_python은 `cyclonedds==0.10.2`를 고정하므로 호환 여부를 확인하고, 필요하면 `~/walking` 아래에 0.10.x를 별도 prefix로 빌드한다. 시스템 `/usr/local`은 기존 로봇 서비스가 쓰므로 덮어쓰지 않는다.
+3. **상시 구동되는 기존 서비스가 많다** (Go2 ROS launch, odometry/SLAM, grid map, 전력 모니터링, 카메라 스트리밍, ROS foxy docker 컨테이너, 원격 데스크톱). odometry 프로세스 하나는 조사 시점 실행 2초째로 재시작 반복이 의심된다. 서비스 이름과 프로세스 목록은 공개 repo에 적지 않고 원본 파일에만 둔다. 이 중 LowCmd를 보내는 것이 있는지는 단계 E 전에 반드시 확인한다 (`jetson_survey2.sh` 3번).
+4. bridge 매핑 경로가 실제로 로드하는 서드파티는 torch, cupy, numpy, scipy, shapely, simple_parsing, ruamel.yaml, pyyaml뿐이다 (데스크톱에서 backend 인스턴스화 후 `sys.modules` 실측). elevation_mapping_cupy `requirements.txt`의 opencv, scikit-image, matplotlib, catkin-tools는 설치하지 않는다.
+5. backend가 쓰는 API는 `torch.as_tensor/stack/where/no_grad`, `cp.ElementwiseKernel/asarray/MemoryPool` 수준이고 DLPack을 쓰지 않는다. `ElementwiseKernel`은 런타임 NVRTC 컴파일이 필요하다 (CUDA 11.4 toolkit 존재).
+
+## Jetson 패키지 버전 (공식 자료 확인, 2026-09-17)
+
+| 패키지 | 버전 | 근거 |
+|---|---|---|
+| torch | `2.0.0+nv23.05` cp38 aarch64 | NVIDIA "Installing PyTorch for Jetson Platform" 문서가 JetPack 5.1.1용으로 지정한 v511 wheel. JetPack 5.x의 최신은 2.1.0a0(nv23.06, v512)이며 2.2 이상은 JetPack 6/cp310 전용 |
+| cupy | `cupy-cuda11x==12.3.0` | cp38 aarch64 wheel이 있는 마지막 버전. CuPy v13은 Python 3.8 지원 중단. v12 지원 목록에 CUDA 11.4 포함, v12.0.0부터 aarch64 wheel을 PyPI에서 제공 |
+| numpy / scipy | `1.24.4` / `1.10.1` | Python 3.8을 지원하는 마지막 릴리스 (PyPI `requires_python`). NVIDIA 문서의 `numpy==1.26.1` 고정은 3.9 이상 전용이라 따르지 않는다 |
+| cyclonedds (python) | `0.10.2` sdist | PyPI에 Linux aarch64 wheel이 없어 소스 빌드. unitree_sdk2_python README는 C 라이브러리를 `releases/0.10.x`에서 빌드해 `CYCLONEDDS_HOME`으로 지정하라고 안내한다. 0.10.2 바인딩과 0.11 C 라이브러리의 호환을 보증하는 공식 문서는 찾지 못했으므로 C 0.10.2를 `~/walking/opt`에 별도 빌드한다 |
+| shapely, simple-parsing, ruamel.yaml, pyyaml | 2.0.7, 0.1.7, 0.18.16, 6.0.3 | cp38/aarch64로 해석된 버전 (`make_jetson_bundle.sh` 실행 결과) |
+
+데스크톱 검증: `make_jetson_bundle.sh`로 29개 wheel이 모두 cp38/aarch64 바이너리로 해석됨(335MB). CycloneDDS C 0.10.2는 스크립트의 CMake 옵션으로 빌드되어 `libddsc.so.0.10.2`를 생성(최소 cmake 3.16, Jetson은 3.16.3). `gpu_smoke.py`는 데스크톱(RTX 3060, torch 2.7/cupy 13.6)에서 6단계 통과, update+sample p50 2.2ms / 첫 호출 207ms. 이 wheel들이 Jetson 실기에서 동작하는지는 아직 검증되지 않았다.
+
+### Jetson 설치 절차 (sudo 없음, `~/walking` 밖은 건드리지 않음)
+
+```
+# 데스크톱
+bash deploy/parkour/migration/make_jetson_bundle.sh <pip 있는 python>     # ~/workspace/codes/go2_jetson_bundle
+scp -r ~/workspace/codes/go2_jetson_bundle unitree@192.168.123.18:~/walking/
+# Jetson
+cd ~/walking/go2_jetson_bundle
+bash jetson_setup.sh check     # 먼저 이것만. FAIL 항목이 있으면 중단하고 보고
+bash jetson_setup.sh all       # unpack -> venv -> dds -> pkgs -> smoke
+```
+
+Jetson `check` 1회차(2026-09-17)에서 `python3.8-venv`(ensurepip)와 `libopenblas`가 없다고 나왔다. 둘 다 sudo 없이 해결한다.
+
+- venv: `python3.8 -m venv --without-pip` 후 번들의 pip wheel을 직접 실행해 부트스트랩한다.
+- libopenblas: torch wheel의 `DT_NEEDED`를 직접 조사해 시스템에 없을 수 있는 것은 `libopenblas.so.0`, `libnuma.so.1`뿐임을 확인했다(MPI 불필요). `fetch_focal_arm64_debs.py`가 ports.ubuntu.com의 focal arm64 인덱스에서 `.deb`를 받아 SHA256을 대조하고, `jetson_setup.sh syslibs`가 `~/walking/opt/syslibs`에 풀어 시스템에 없는 라이브러리만 링크한다. 시스템에는 설치하지 않으며 `env.sh`의 `LD_LIBRARY_PATH`로만 연결된다.
+
+`smoke`의 `elevation-mapper` 줄에 나오는 update+sample p95/max가 bridge의 cloud/map 200ms deadline 대비 Jetson의 여유를 보여준다. bridge 실행 전에는 `source ~/walking/env.sh`를 적용한다.
+
 ## 알려진 주의점
 
 1. **git-lfs**: `.gitattributes`의 LFS 대상은 MuJoCo `.obj` 17개뿐이고 배포에 불필요하다. git-lfs가 없는 장비에서 전역 LFS 필터가 켜져 있으면 checkout이 실패하므로 `GIT_LFS_SKIP_SMUDGE=1`로 clone한다 (`notebook_setup.sh clone`에 반영).
 2. ~~**정적 라이브러리**~~: 해소됨. Ubuntu 22.04 패키지에 `libboost_program_options.a`와 `libyaml-cpp.a`가 모두 있어 링크 방식 변경이 필요 없었다 (2026-09-17 노트북 실측).
 3. **Jetson 오프라인 가능성**: Jetson이 인터넷에 못 나가면 wheel/소스를 데스크톱에서 받아 옮겨야 한다. 조사 스크립트가 pypi 도달성을 기록한다.
 4. **captures 의존 도구**: `audit_go2_targets.py`, `check_go2_repeatability.py`, `shadow_go2_policy.py` 등 오프라인 분석 도구는 데스크톱 캡처가 필요하다. 이식 대상 장비에서는 실행하지 않는다.
-5. **ROS 2와 CycloneDDS 충돌**: ROS 2가 설치된 장비에서는 `notebook_setup.sh build`의 `-Wl,--disable-new-dtags`가 반드시 필요하다. 위 "A-2 발견" 참고. 다른 방법으로 빌드할 때는 `ldd`로 `libddsc.so.0`이 SDK prefix에서 오는지 매번 확인한다. Jetson에도 ROS가 있으면 bridge 쪽 `cyclonedds` Python 바인딩에 같은 종류의 충돌이 없는지 확인할 것.
+5. **CycloneDDS 버전 혼입 (양쪽 장비 공통)**: 노트북은 ROS 2 Humble이 `LD_LIBRARY_PATH`로 SDK의 `libddsc.so.0`을 가로챘고, `-Wl,--disable-new-dtags`로 고쳤다 (위 "A-2 발견"). Jetson도 같은 종류의 위험이 확인됐다 — 시스템에 `libddsc.so.0.11.0`(0.11 계열)이 있고 ROS launch 서비스들이 상시 구동되며 전역 `CYCLONEDDS_URI`가 설정돼 있는데, `unitree_sdk2_python`은 `cyclonedds==0.10.2`를 고정한다. 그래서 Jetson은 C 0.10.2를 `~/walking/opt`에 별도 prefix로 빌드하고 `env.sh`로만 연결한다. **양쪽 모두, 실행 직전에 실제로 로드되는 DDS 라이브러리를 확인할 것** — 노트북은 `ldd build/go2_ctrl`, Jetson은 bridge venv에서 `python -c "import cyclonedds; ..."` 후 `/proc/<pid>/maps`. 링크가 아니라 **런타임 해석**이 기준이다.
 6. **wayland에서는 a/d 조향 불가**: `Go2HeldHeadingInput`은 `XGetInputFocus`/`XQueryKeymap`을 쓴다. wayland 세션에서는 focus가 `None`으로 잡혀 조향이 비활성화된다 (crash 없이 비활성화). 실제 주행 세션은 반드시 "Ubuntu on Xorg"로 로그인한다.
 
 ## 다음 단계
 
-1. ~~노트북 clone + 세션 실행~~ 완료. 단계 A-2/A-3 통과, A-4는 아래가 남았다.
-2. ~~"Ubuntu on Xorg" 재로그인 + a / d / a+d / 포커스 이탈 확인~~ **완료. 단계 A 전체 종료.** 세션은 Xorg 로 유지한다 (GDM 이 선택을 기억한다).
-3. Jetson: `bash jetson_survey.sh` 실행 후 결과 파일 전달 (노트북을 Go2에 유선 연결한 뒤 노트북 세션에서 해도 된다).
+1. ~~노트북: clone + 세션 실행, 단계 A-2/A-3~~ 완료.
+2. ~~노트북: "Ubuntu on Xorg" 재로그인 + a / d / a+d / 포커스 이탈 확인~~ **완료. 노트북 단계 A 전체 종료.** 세션은 Xorg 로 유지한다 (GDM 이 선택을 기억한다).
+3. Jetson: 1차 조사 완료. `~/walking`에서 `bash jetson_survey2.sh`(인터넷/시계, CycloneDDS 버전, 기존 서비스의 LowCmd 사용 여부)를 실행해 결과를 전달하고, 위 "Jetson 설치 절차"를 진행한다.
 4. 이후 단계 B(설치) → C(유선 분산, 수신 전용) → D(AP 무선, 수신 전용) → 측정 보고 → E(실제 제어).
 
 ### 노트북에서 최초 1회
