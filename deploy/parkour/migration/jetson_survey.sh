@@ -63,7 +63,7 @@ run bash -c 'echo CYCLONEDDS_HOME=${CYCLONEDDS_HOME:-}; echo CYCLONEDDS_URI=${CY
 sec "network"
 run ip -br addr
 run ip route
-run bash -c 'timeout 5 curl -sI https://pypi.org 2>&1 | head -1 || echo "no internet (pypi unreachable)"'
+run bash -c 'curl -sS -m 5 -o /dev/null -w "pypi https: http_code=%{http_code}\n" https://pypi.org; echo "curl exit=$? (0=ok 6=dns 7=connect 28=timeout 60=cert/clock)"'
 
 sec "autostart services / containers / cron (기존 로봇 서비스 확인용)"
 MAXL=80 run systemctl list-units --type=service --state=running --no-pager --no-legend
