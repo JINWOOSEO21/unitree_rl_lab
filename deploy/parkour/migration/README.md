@@ -99,7 +99,7 @@ libonnxruntime.so.1 => deploy/thirdparty/onnxruntime-linux-x64-1.22.0/lib/libonn
   `test_obs_golden`의 입력이 아니다. 여기에 물리면 관측 조립 단계가 FAIL로 나오지만
   (ONNX 출력 단계는 1000프레임 12000개 전부 PASS) 이는 fixture를 잘못 물린 것이지 회귀가 아니다.
 
-### A-4 키보드 / X11 — 누름/해제/동시누름 통과, 포커스 이탈만 남음
+### A-4 키보드 / X11 — 전 항목 통과
 
 코드 확인 결과 **`--keyboard-check`로는 a/d hold 조향을 검증할 수 없다**:
 `Go2TerminalInput::poll()`은 상태가 Policy가 아니면 매 폴링마다 `held_heading_.clear()` 하고
@@ -141,12 +141,33 @@ window 를 반환하고 `available()` 이 true. 결과:
 값이 `0.2617993878 rad = 15도` 와 정확히 일치한다. 동시누름 상태에서 빠져나올 때 latch 없이
 복귀하는 것도 확인했다. wayland 와 달리 Xorg 에서는 조향이 정상 동작한다.
 
-**포커스 이탈은 아직 미확인.** 최초 probe 는 포커스를 잃었을 때도 `a=0 d=0 -> 0` 으로만 찍어서
-키 해제와 구분되지 않았다 (probe 설계 실수). `Go2HeldHeadingInput::focused()` 접근자를 추가하고
-probe 가 `=== FOCUS LOST / REGAINED ===` 를 명시적으로 출력하도록 고쳤다. 남은 확인:
-**`a` 를 누른 채로** 다른 창을 클릭해 `FOCUS LOST` 직후 `0` 이 되는지 (키가 아직 눌린 상태에서)
-보는 것. 포커스 처리 자체는 `go2_held_heading_tests` 가 fake Xlib 백엔드로 이미 검증하지만,
-실제 X 서버에서 `XGetInputFocus` 가 창 전환을 보고하는지는 실측이 필요하다.
+#### 포커스 이탈 실측 (PASS)
+
+최초 probe 는 포커스를 잃었을 때도 `a=0 d=0 -> 0` 으로만 찍어서 키 해제와 구분되지 않았다
+(probe 설계 실수). `Go2HeldHeadingInput::focused()` 진단용 접근자를 추가하고 probe 가
+`=== FOCUS LOST / REGAINED ===` 를 명시적으로 출력하도록 고친 뒤 재실측:
+
+```
+a=1 d=0 -> +0.2618 rad (+15.0 deg)
+aaaaaaaa…aaaa                        <- 키를 계속 누른 상태 (autorepeat 에코)
+=== FOCUS LOST ===
+a=0 d=0 -> +0.0000 rad (+0.0 deg)   [unfocused]
+=== FOCUS REGAINED ===
+```
+
+**키가 물리적으로 눌린 상태에서** 조향이 0 으로 떨어진다. 포커스를 되찾아도 `a=1` 이 다시
+찍히지 않는다 — `go2_held_heading_tests` 의 "Focus return alone cannot reactivate held keys"
+와 실제 X 서버 동작이 일치한다.
+
+#### autorepeat 중 `XQueryKeymap` 오탐 여부 (문제 없음)
+
+홀드 도중 `+15 → 0 → +15` 로 한 번 튄 구간이 있어 `XQueryKeymap` 이 autorepeat 사이에
+키를 "떼짐" 으로 읽는지 검토했다. `xset q`: `auto repeat delay 500, repeat rate 33`.
+`a` 에코 64개 ≈ 1.9초이고 probe 는 100Hz 폴링이므로 그 사이 약 190회 읽었다. autorepeat 마다
+토글된다면 초당 33회 깜빡였을 것이고, probe 는 값이 바뀔 때만 출력하므로 교대 출력이 수십 줄
+나왔어야 한다. 실제로는 autorepeat 약 100회 동안 단 1회 튀었다 → `XQueryKeymap` 은 물리 키
+상태를 반영하며 autorepeat 의 영향을 받지 않는다. 그 1회는 손가락이 잠깐 떨어진 것으로 본다.
+조향이 떨리는 현상은 없다. (단계 E 의 첫 Policy 주행에서 한 번 더 눈으로 확인하면 좋다.)
 
 ## 알려진 주의점
 
@@ -160,7 +181,7 @@ probe 가 `=== FOCUS LOST / REGAINED ===` 를 명시적으로 출력하도록 �
 ## 다음 단계
 
 1. ~~노트북 clone + 세션 실행~~ 완료. 단계 A-2/A-3 통과, A-4는 아래가 남았다.
-2. ~~"Ubuntu on Xorg" 재로그인 + a / d / a+d 확인~~ 완료 (위 표). **남은 것: 포커스 이탈 1건** — `a`를 누른 채 다른 창 클릭 → `FOCUS LOST` 후 `0`. 물리 키 입력이라 대행 불가.
+2. ~~"Ubuntu on Xorg" 재로그인 + a / d / a+d / 포커스 이탈 확인~~ **완료. 단계 A 전체 종료.** 세션은 Xorg 로 유지한다 (GDM 이 선택을 기억한다).
 3. Jetson: `bash jetson_survey.sh` 실행 후 결과 파일 전달 (노트북을 Go2에 유선 연결한 뒤 노트북 세션에서 해도 된다).
 4. 이후 단계 B(설치) → C(유선 분산, 수신 전용) → D(AP 무선, 수신 전용) → 측정 보고 → E(실제 제어).
 
