@@ -107,20 +107,79 @@ low=24850  scan=0  fault=132  fatal=0        map warmup 77 ms
 **fatal 0 으로 60 초 완주** (이전에는 즉시 사망). `lowstate gap` fault 는 **0 회** — warmup 이
 스파이크 자체를 없앴다. gyro 보정도 완료(`gyro_calibrated: true`).
 
-### 남은 문제 (다음 세션)
+## scandots 가 안 나오는 원인 — 단계별 특정 (2026-09-17, 단계 C-2)
 
-`scan` 이 아직 0 이다. fault 132 는 두 덩어리로 갈린다.
+위 수정으로 브리지는 죽지 않게 됐지만 `scan` 은 여전히 0 이고 fault 는 전부
+`cloud_too_old` / `cloud_too_old_after_mapping` 이었다. 브리지를 단계로 쪼개 특정했다.
 
-- 0~10 s: `leg_odom_no_reliable_support` — gyro 보정 창 10 초. 정상.
-- 11~22 s: `cloud_too_old` / `cloud_too_old_after_mapping`.
-- **22~60 s: fault 도 scan 도 없는 완전한 침묵.** cloud 를 소비하지 못한다.
+`tools/go2_bridge_stage_probe.py` — 브리지를 **수정하지 않고** 모듈 최상위 함수만 감싸
+각 단계 통과 횟수를 세고, 모든 스레드 스택을 주기적으로 덤프한다. 각 함수는 도달 경로가
+하나뿐이라 그대로 그 단계의 카운터가 된다 (`low_row`=LowState 콜백, `stamp_id`=cloud 콜백,
+`time.sleep`=tick 루프 1 회전, `preceding_pose`=cloud 채택, `BaseMapper.update`=GPU 도달).
 
-lidar 는 60 초 내내 15~16.5 Hz 로 정상 발행되고 header stamp 는 한 번도 멈추거나 되돌아가지
-않는다(`same_stamp=0 back_stamp=0`). 브리지와 **같은 일**을 하는 위 probe 는 tick 을 정확히
-10.0 Hz 로 601 회 돌면서 cloud 나이 max 64.5 ms, map max 49.9 ms 로 전혀 문제가 없다.
-따라서 성능도 센서도 아니고 브리지 구조 쪽이다. probe 와 브리지의 차이는 브리지가
-`low_callback` 에서 500 Hz 로 `leg.update()`(전체 FK)를 공유 RLock 을 쥔 채 도는 것이다 —
-메인 tick 루프의 cloud 소비가 굶는지 확인하는 것이 다음 단계다.
+### 브리지 안에서만 모든 것이 느려진다
+
+| | probe (같은 I/O, `leg.update` 없음) | 실제 브리지 | 기대 |
+|---|---|---|---|
+| lowstate | 537 Hz | **380 Hz** | 500 |
+| cloud 콜백 | 16.5 Hz | **3.9 Hz** | 16.5 |
+| tick 루프 | 10.0 Hz | **6.5 Hz** | 10 |
+| map 갱신 최대 | 49.9 ms | **499 ms** | — |
+| cloud 나이 최대 | 64.5 ms | **200 ms 초과** | <200 |
+
+`cloud_too_old` 는 원인이 아니라 **증상**이다. map 갱신이 GPU 가 느려서가 아니라 GIL 을
+못 얻어 499 ms 가 걸리고, 끝났을 때 cloud 가 이미 200 ms 를 넘긴 것이다. 첫 실행에서
+22 초 후 fault 도 scan 도 없이 조용해진 것도 같은 이유다 — cloud 콜백이 완전히 굶으면
+tick 루프는 `item[1] == last_cloud` 로 **아무 것도 emit 하지 않고** `continue` 한다.
+
+### 스택 덤프: 리더 스레드는 항상 같은 곳에 있다
+
+20 초 간격 독립 스냅샷 2 회 모두 LowState 리더 스레드가 leg odometry 안에 있었다.
+
+```
+File "em_sidecar/kinematics.py", line 28 in quat_to_mat
+File "em_sidecar/leg_odometry.py", line 235 in step
+File "tools/go2_leg_pose.py", line 141 in update
+File "tools/go2_sensor_bridge.py", line 203 in low_callback
+File "unitree_sdk2py/core/channel.py", line 110 in __OnDataAvailable
+```
+
+### 원인: 500 Hz 콜백 안에서 전체 FK 를 파이썬으로 돈다
+
+`tools/go2_lowstate_cost.py` — DDS 없이 표본 하나의 비용만 잰다 (n=2000):
+
+| 단계 | Jetson Orin NX | 노트북 x86 |
+|---|---|---|
+| `validate_lowstate` | 0.121 ms (6.0%) | 0.052 ms (2.6%) |
+| `quat_to_mat` | 0.034 ms (1.7%) | 0.015 ms (0.7%) |
+| `kin.link_poses_base` (FK) | 0.518 ms (25.9%) | 0.173 ms (8.6%) |
+| **`LegPose.update` 전체** | **1.515 ms (75.8%)** | 0.494 ms (24.7%) |
+
+괄호는 500 Hz 예산(표본당 2.00 ms) 대비 코어 점유율이다. **Jetson 에서 LowState 콜백
+하나가 예산의 76 % 를 파이썬으로, GIL 을 쥔 채 쓴다.** `low_row`·`emit`·`poses.append`
+까지 더하면 예산을 넘겨 실제로 380 Hz 로 떨어진다. 그 뒤에서 cloud 리더와 tick 루프와
+GPU 호출이 전부 굶는다. x86 에서는 같은 일이 25 % 라 여유가 있었고, 그래서 데스크톱에서는
+한 번도 드러나지 않았다.
+
+덤으로 `validate_lowstate` 는 표본마다 **두 번** 돈다 — `low_callback` 에서 한 번,
+`LegPose.update` 안에서 또 한 번. 매번 `GuardConfig()` 를 새로 만든다.
+
+### 방향 (미결정)
+
+`max_dt_s` 나 `cloud_too_old` 의 200 ms 를 늘리는 것은 답이 아니다. 계획 C-5 가 금지하고,
+느린 원인을 그대로 둔 채 지연만 받아들이는 것이다.
+
+- **A. 추정기 주기를 DDS 주기에서 분리한다.** 지도는 pose 를 10 Hz 로만 쓴다. 500 → 100 Hz
+  로 줄이면 점유율이 76 % → 15 % 가 된다. 다만 공짜가 아니다: `contact_settle_s` 가 20 ms
+  이고 `force_lp_tau_s` 가 6 ms 라, 10 ms 간격에서는 접촉력 저역통과가 사실상 꺼진다
+  (`alpha = min(1, dt/tau) = 1`). 기존 fixture 로 재검증이 필요하다.
+- **B. 콜백을 싸게 만든다.** 중복 `validate_lowstate` 제거(6 %), FK 벡터화. B 만으로는
+  76 % 를 예산 안으로 못 넣는다.
+
+### 부수 문제
+
+`--duration 60` 실행이 루프 종료 후 **약 55 초 더 매달려 있다가** `timeout` 에 죽었다.
+`finally` 의 구독 종료/출력 close 경로가 깨끗하게 끝나지 않는다.
 
 ## 노트북(Galaxy Book4 Pro) 세션 결과 — 2026-09-17, 단계 A-2~A-4
 
