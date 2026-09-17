@@ -6,11 +6,12 @@
 #   cd ~/walking/go2_jetson_bundle
 #   bash jetson_setup.sh check    # 번들 무결성 + 빌드 전제 조건 점검 (아무것도 설치하지 않음)
 #   bash jetson_setup.sh unpack   # 소스 압축 해제
-#   bash jetson_setup.sh venv     # Python 3.8 venv + pip 부트스트랩
+#   bash jetson_setup.sh syslibs  # libopenblas 등 .deb 를 $ROOT/opt/syslibs 에 풀기 (시스템 설치 아님)
+#   bash jetson_setup.sh venv     # Python 3.8 venv + pip 부트스트랩 (ensurepip 불필요)
 #   bash jetson_setup.sh dds      # CycloneDDS C 0.10.2 를 $ROOT/opt 에 빌드 + python 바인딩
 #   bash jetson_setup.sh pkgs     # torch / cupy / numpy / scipy ... + unitree_sdk2py
 #   bash jetson_setup.sh smoke    # GPU 단계별 스모크 테스트 (DDS 미사용)
-#   bash jetson_setup.sh all      # unpack -> venv -> dds -> pkgs -> smoke
+#   bash jetson_setup.sh all      # check -> unpack -> syslibs -> venv -> dds -> pkgs -> smoke
 set -euo pipefail
 
 BUNDLE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,7 +27,7 @@ write_env() {
 # source ~/walking/env.sh  -- bridge 실행 전 매번 적용
 source "$VENV/bin/activate"
 export CYCLONEDDS_HOME="$DDS_PREFIX"
-export LD_LIBRARY_PATH="$DDS_PREFIX/lib:/usr/local/cuda/lib64\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH="$DDS_PREFIX/lib:$ROOT/opt/syslibs/lib:/usr/local/cuda/lib64\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
 export CUDA_PATH=/usr/local/cuda
 export PATH="/usr/local/cuda/bin:\$PATH"
 export GO2_PARKOUR="$SRC/parkour"
@@ -37,12 +38,19 @@ EOF
 do_check() {
   local bad=0
   ( cd "$BUNDLE" && sha256sum --quiet -c SHA256SUMS ) && echo "ok   bundle sha256" || { echo "FAIL bundle sha256"; bad=1; }
-  python3.8 -c 'import venv, ensurepip' 2>/dev/null && echo "ok   python3.8 venv" || { echo "FAIL python3.8 venv (python3.8-venv 필요)"; bad=1; }
+  # ensurepip(python3.8-venv) 이 없어도 된다: --without-pip 로 만들고 번들의 pip wheel 로 부트스트랩한다.
+  python3.8 -c 'import venv' 2>/dev/null && ls "$BUNDLE"/wheels/pip-*.whl >/dev/null 2>&1 \
+    && echo "ok   python3.8 venv (--without-pip + 번들 pip wheel)" || { echo "FAIL python3.8 venv 모듈 또는 번들 pip wheel 없음"; bad=1; }
   [ -f "$(python3.8 -c 'import sysconfig; print(sysconfig.get_paths()["include"])')/Python.h" ] \
     && echo "ok   Python.h (cyclonedds 바인딩 빌드용)" || { echo "FAIL Python.h 없음 (python3.8-dev 필요)"; bad=1; }
   for t in cmake gcc g++ make; do command -v $t >/dev/null && echo "ok   $t" || { echo "FAIL $t"; bad=1; }; done
   [ -x /usr/local/cuda/bin/nvcc ] && echo "ok   nvcc $(/usr/local/cuda/bin/nvcc --version | grep -o 'release [0-9.]*')" || { echo "FAIL nvcc"; bad=1; }
-  ldconfig -p | grep -q libopenblas && echo "ok   libopenblas (torch 런타임)" || { echo "FAIL libopenblas 없음 (sudo apt install libopenblas-dev 필요)"; bad=1; }
+  # torch wheel 의 DT_NEEDED 중 JetPack 기본 설치에 없을 수 있는 것. 시스템에 없으면 번들 .deb 를 풀어서 쓴다.
+  for lib in libopenblas.so.0 libgfortran.so.5 libnuma.so.1; do
+    if ldconfig -p | grep -q "$lib"; then echo "ok   $lib (system)"
+    elif command -v dpkg-deb >/dev/null && ls "$BUNDLE"/debs/*.deb >/dev/null 2>&1; then echo "ok   $lib (system 에 없음 -> 번들 .deb 를 $ROOT/opt/syslibs 에 풀어 사용, sudo 불필요)"
+    else echo "FAIL $lib 없음, 번들 debs/ 도 없음"; bad=1; fi
+  done
   ldconfig -p | grep -q 'libcudnn.so.8' && echo "ok   libcudnn 8" || echo "warn libcudnn 8 not in ldconfig"
   echo "info free disk: $(df -h --output=avail "$ROOT" | tail -1)   date: $(date -Is) (1970년이어도 오프라인 설치에는 영향 없음)"
   return $bad
@@ -56,8 +64,26 @@ do_unpack() {
   ls "$SRC"
 }
 
+do_syslibs() {
+  # .deb 를 시스템에 설치하지 않고 풀기만 한다. 시스템에 이미 있는 라이브러리는 링크하지 않는다(시스템 것 우선).
+  local stage="$ROOT/opt/syslibs/root" lib="$ROOT/opt/syslibs/lib"
+  mkdir -p "$stage" "$lib"
+  for d in "$BUNDLE"/debs/*.deb; do dpkg-deb -x "$d" "$stage"; done
+  for name in libopenblas.so.0 libgfortran.so.5 libnuma.so.1; do
+    if ldconfig -p | grep -q "$name"; then echo "skip $name (system)"; continue; fi
+    local src; src="$(find "$stage" -name "$name" | head -1)"
+    [ -n "$src" ] || { echo "FAIL $name not found in debs"; return 1; }
+    ln -sfn "$(readlink -f "$src")" "$lib/$name"
+    echo "link $name -> $(readlink -f "$src")"
+  done
+}
+
 do_venv() {
-  [ -x "$VENV/bin/python" ] || python3.8 -m venv "$VENV"
+  if [ ! -x "$VENV/bin/python" ]; then
+    python3.8 -m venv --without-pip "$VENV"
+    "$VENV/bin/python" "$(ls "$BUNDLE"/wheels/pip-*.whl | head -1)/pip" install --no-index \
+      --find-links "$BUNDLE/wheels" pip
+  fi
   "${PIP[@]}" --upgrade pip setuptools wheel "Cython<3"
   write_env
   "$VENV/bin/python" -m pip --version
@@ -96,6 +122,7 @@ case "${1:-}" in
   dds) do_dds ;;
   pkgs) do_pkgs ;;
   smoke) do_smoke ;;
-  all) do_check; do_unpack; do_venv; do_dds; do_pkgs; do_smoke ;;
-  *) sed -n '2,14p' "$0"; exit 2 ;;
+  syslibs) do_syslibs ;;
+  all) do_check; do_unpack; do_syslibs; do_venv; do_dds; do_pkgs; do_smoke ;;
+  *) sed -n '2,15p' "$0"; exit 2 ;;
 esac

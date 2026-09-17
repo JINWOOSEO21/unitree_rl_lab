@@ -56,9 +56,13 @@ tar -C "$CODES/Isaaclab_Parkour" --exclude=.git --exclude=__pycache__ --exclude=
 tar -C "$PARKOUR/.." --exclude=captures --exclude=videos --exclude=mujoco --exclude=.omc \
     --exclude=__pycache__ --exclude=.pytest_cache -czf "$OUT/src/parkour.tar.gz" parkour
 
+echo "[5b] torch wheel 이 요구하는 시스템 라이브러리 (.deb, Jetson 에서는 설치하지 않고 압축만 푼다)"
+# torch 2.0.0+nv23.05 의 DT_NEEDED: libopenblas.so.0, libnuma.so.1. Jetson 에 libopenblas 가 없고 sudo 를 쓰지 않는다.
+"$PY" "$HERE/fetch_focal_arm64_debs.py" "$OUT/debs" libopenblas0-pthread libgfortran5 libnuma1
+
 echo "[6/6] manifest"
-cp "$HERE/jetson_setup.sh" "$OUT/" 2>/dev/null || true
-( cd "$OUT" && find wheels src -type f | sort | xargs sha256sum > SHA256SUMS )
+cp "$HERE/jetson_setup.sh" "$HERE/jetson_survey2.sh" "$OUT/" 2>/dev/null || true
+( cd "$OUT" && find wheels src debs -type f | sort | xargs sha256sum > SHA256SUMS )
 {
   echo "created=$(date -Is) host=$(hostname)"
   echo "target=JetPack 5.1.1 / L4T R35.3.1 / CUDA 11.4 / Python 3.8 / aarch64"

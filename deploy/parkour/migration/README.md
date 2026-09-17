@@ -93,6 +93,11 @@ bash jetson_setup.sh check     # 먼저 이것만. FAIL 항목이 있으면 중�
 bash jetson_setup.sh all       # unpack -> venv -> dds -> pkgs -> smoke
 ```
 
+Jetson `check` 1회차(2026-09-17)에서 `python3.8-venv`(ensurepip)와 `libopenblas`가 없다고 나왔다. 둘 다 sudo 없이 해결한다.
+
+- venv: `python3.8 -m venv --without-pip` 후 번들의 pip wheel을 직접 실행해 부트스트랩한다.
+- libopenblas: torch wheel의 `DT_NEEDED`를 직접 조사해 시스템에 없을 수 있는 것은 `libopenblas.so.0`, `libnuma.so.1`뿐임을 확인했다(MPI 불필요). `fetch_focal_arm64_debs.py`가 ports.ubuntu.com의 focal arm64 인덱스에서 `.deb`를 받아 SHA256을 대조하고, `jetson_setup.sh syslibs`가 `~/walking/opt/syslibs`에 풀어 시스템에 없는 라이브러리만 링크한다. 시스템에는 설치하지 않으며 `env.sh`의 `LD_LIBRARY_PATH`로만 연결된다.
+
 `smoke`의 `elevation-mapper` 줄에 나오는 update+sample p95/max가 bridge의 cloud/map 200ms deadline 대비 Jetson의 여유를 보여준다. bridge 실행 전에는 `source ~/walking/env.sh`를 적용한다.
 
 ## 알려진 주의점
