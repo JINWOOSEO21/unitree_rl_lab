@@ -32,6 +32,9 @@ link_libraries(${PROJECT_NAME}_lib)
 
 add_executable(go2_ctrl main.cpp)
 add_executable(go2_scandots_probe tools/scandots_probe.cpp)
+# Live bridge output on the real robot network (subscriber only). scandots_probe is the
+# loopback self-test: domain 179 on "lo" with rt/parkour/test_scandots.
+add_executable(go2_parkour_rx_probe tools/parkour_rx_probe.cpp)
 
 enable_testing()
 add_executable(go2_keyboard_tests tests/test_keyboard_control.cpp)
