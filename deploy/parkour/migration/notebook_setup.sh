@@ -13,7 +13,7 @@
 set -euo pipefail
 
 CODES="${CODES:-$HOME/workspace/codes}"
-BRANCH="${BRANCH:-migration/jetson-galaxybook}"
+BRANCH="${BRANCH:-migration}"
 RL_LAB_URL="${RL_LAB_URL:-https://github.com/JINWOOSEO21/unitree_rl_lab.git}"
 SDK_URL="${SDK_URL:-https://github.com/unitreerobotics/unitree_sdk2.git}"
 SDK_COMMIT="${SDK_COMMIT:-9754cd1}"          # 데스크톱에서 검증된 unitree_sdk2 commit

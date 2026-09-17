@@ -8,7 +8,7 @@
 
 | 항목 | 결정 |
 |---|---|
-| 코드 전달 | 브랜치 `migration/jetson-galaxybook` commit + push, 각 장비에서 clone. main 직접 push 없음 |
+| 코드 전달 | 브랜치 `migration` commit + push, 각 장비에서 clone. main 직접 push 없음. (2026-09-17 `migration/jetson-galaxybook` 에서 이름 변경. 옛 이름은 원격에 없다) |
 | 노트북 작업 | 노트북에서 별도 Claude Code 세션으로 진행 (데스크톱과 네트워크 대역이 달라 SSH 원격 불가). 아래 "노트북 세션 요청문" 사용 |
 | Jetson 작업 | `jetson_survey.sh`를 사용자가 직접 실행하고 결과 파일 전달. 비밀번호는 공유하지 않음 |
 | 키보드 세션 | GDM 로그인에서 "Ubuntu on Xorg" 선택. Wayland/XWayland 경로는 사용하지 않음 |
@@ -273,7 +273,7 @@ Jetson eth0에서 같은 probe(`jetson_setup.sh rxprobe`)를 돌려 이 표와 �
 ```
 sudo apt update && sudo apt install -y git
 mkdir -p ~/workspace/codes && cd ~/workspace/codes
-GIT_LFS_SKIP_SMUDGE=1 git clone --branch migration/jetson-galaxybook https://github.com/JINWOOSEO21/unitree_rl_lab.git
+GIT_LFS_SKIP_SMUDGE=1 git clone --branch migration https://github.com/JINWOOSEO21/unitree_rl_lab.git
 cd unitree_rl_lab && claude
 ```
 
