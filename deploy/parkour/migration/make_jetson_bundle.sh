@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 데스크톱(x86_64, 인터넷 가능)에서 Jetson(JetPack 5.1.1, Python 3.8, aarch64)용 오프라인 설치 번들을 만든다.
 # Jetson 의 인터넷/시계(1970년, HTTPS 인증서 검증 실패 가능) 상태와 무관하게 설치하기 위함이다.
-# 버전 근거는 README 의 "Jetson 패키지 버전" 절 참고. 로봇/Jetson 에는 아무것도 보내지 않는다.
+# 설치 안내는 ../../README.md 참고. 로봇/Jetson 에는 아무것도 보내지 않는다.
 #
 #   bash make_jetson_bundle.sh <pip 가 있는 python> [출력 디렉터리]
 set -euo pipefail
@@ -61,7 +61,7 @@ echo "[5b] torch wheel 이 요구하는 시스템 라이브러리 (.deb, Jetson 
 "$PY" "$HERE/fetch_focal_arm64_debs.py" "$OUT/debs" libopenblas0-pthread libgfortran5 libnuma1
 
 echo "[6/6] manifest"
-cp "$HERE/jetson_setup.sh" "$HERE/jetson_survey2.sh" "$OUT/" 2>/dev/null || true
+cp "$HERE/jetson_setup.sh" "$OUT/"
 ( cd "$OUT" && find wheels src debs -type f | sort | xargs sha256sum > SHA256SUMS )
 {
   echo "created=$(date -Is) host=$(hostname)"

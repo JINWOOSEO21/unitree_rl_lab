@@ -3,9 +3,10 @@
 #   - assets/unitree_go2/assets/*.obj : Go2 MJCF 가 참조하는 메시. 없으면 컴파일 실패.
 #   - assets/terrain/terrain.obj      : IsaacLab 원본 삼각망 (지형 검증 기준값)
 #   - assets/terrain/terrain_meta.npz : hfield 높이 격자 + 목표점/스폰 메타
-#   - contract/*.npz                  : 골든 트레이스
+#   - contract/*.npz                  : 로봇 기구학과 scan 격자
 !*.obj
 !*.npz
 
-# 테스트 빌드 산출물
-tests/build/
+# 센서 기록과 시각화 산출물
+captures/
+videos/

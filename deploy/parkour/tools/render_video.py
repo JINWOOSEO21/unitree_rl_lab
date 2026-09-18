@@ -45,7 +45,7 @@ import mujoco  # noqa: E402
 
 from em_sidecar.kinematics import Go2Kinematics, quat_to_mat, yaw_from_quat  # noqa: E402
 from em_sidecar.sidecar import IMU_SITE_IN_BASE  # noqa: E402
-from em_sidecar.tests.test_live_terrain import META, Terrain  # noqa: E402
+from em_sidecar.terrain import META, Terrain  # noqa: E402
 
 MJ_ROBOTS = Path.home() / "workspace/codes/unitree_mujoco/unitree_robots/go2"
 SCENES = {

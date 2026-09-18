@@ -180,7 +180,6 @@ def run(interface, domain, duration, emcupy_root, emit, odom_source='leg', leg_c
     # sample on the Jetson, and at 500 Hz that holds the GIL for 76 % of a core -- the cloud
     # reader, the tick loop and the GPU call all starve behind it. The map consumes pose at
     # 10 Hz and preceding_pose accepts one up to 20 ms old, so 100 Hz leaves margin on both.
-    # The offline gate (em_sidecar/tests/test_leg_odometry.py) drives the estimator at 50 Hz.
     estimator_type = MitPose if odom_source == 'mit' else LegPose
     estimator_hz = mit_odom_hz if odom_source == 'mit' else leg_odom_hz
     leg = (estimator_type(contact_threshold=leg_contact_threshold, rate_hz=estimator_hz)
@@ -397,7 +396,7 @@ def main():
     parser.add_argument('--publish-scandots', action='store_true', help='Publish terrain DDS for go2_ctrl')
     parser.add_argument('--scandots-topic', default='rt/parkour/scandots')
     parser.add_argument('--summary-only', action='store_true', help='Print counters once per second instead of all LowState rows')
-    parser.add_argument('--odom', choices=('leg','robot','lio','mit'), default='leg')
+    parser.add_argument('--odom', choices=('leg','robot','mit'), default='leg')
     parser.add_argument('--leg-contact-threshold', type=float, default=20.0,
                         help='Raw foot_force threshold; hardware calibration remains pending')
     parser.add_argument('--leg-odom-hz', type=float, default=100.0,
@@ -410,8 +409,6 @@ def main():
         dependencies(args.odom)
         print('DDS types and torch/cupy import OK; no DDS participant created')
         return
-    if args.odom == 'lio' and args.publish_scandots and args.scandots_topic != 'rt/parkour/scandots_lio_eval':
-        parser.error('LIO is diagnostic: set --scandots-topic rt/parkour/scandots_lio_eval')
     if not args.interface or not 0 <= args.duration <= 300 or not 0 <= args.domain <= 232:
         parser.error('interface required; duration in [0,300], domain in [0,232]')
     output = sys.stdout
@@ -442,14 +439,9 @@ def main():
             output.flush()
     with redirect_stdout(sys.stderr):
         try:
-            if args.odom == 'lio':
-                from lio.map_shadow import run as run_lio
-                code = run_lio(args.interface, args.domain, args.duration, args.emcupy_root, emit,
-                               args.publish_scandots, args.scandots_topic)
-            else:
-                code = run(args.interface, args.domain, args.duration, args.emcupy_root, emit,
-                           args.odom, args.leg_contact_threshold, args.publish_scandots,
-                           args.scandots_topic, leg_odom_hz=args.leg_odom_hz, mit_odom_hz=args.mit_odom_hz)
+            code = run(args.interface, args.domain, args.duration, args.emcupy_root, emit,
+                       args.odom, args.leg_contact_threshold, args.publish_scandots,
+                       args.scandots_topic, leg_odom_hz=args.leg_odom_hz, mit_odom_hz=args.mit_odom_hz)
         except KeyboardInterrupt:
             code = 0
         except Exception as exc:

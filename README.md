@@ -8,6 +8,18 @@
 
 ## Overview
 
+Go2 EDU 실기 배포는 [Go2 배포 안내](deploy/README.md)를 참고하세요.
+Jetson의 센서 브리지와 노트북의 `go2_ctrl`을 사용하며, odometry는
+`--odom leg` 또는 `--odom mit`로 선택합니다. 학습·MuJoCo 시뮬레이션 코드는 유지합니다.
+
+Point-LIO는 제거했습니다. L1 내장 IMU의 pose를 robot base pose로 변환하려면
+두 프레임 사이의 회전·이동을 검증해야 하지만, 공식 L1 프레임과 DDS `cloud`
+프레임의 일치 여부를 확인하지 못했습니다. 가정한 변환을 적용한 정지 기록에서도
+L1 내장 IMU와 Go2 본체 IMU의 중력 방향이 약 143–148° 어긋나 지도 입력으로
+신뢰할 수 없었습니다. 정지 상태의 gyro bias 보정만으로는 이 좌표계 문제를 해결할 수
+없으므로 채택하지 않았습니다. MIT 방식은 Go2 **본체 IMU**와 관절·발 접촉 정보를
+사용하며, **L1 내장 IMU**는 사용하지 않습니다.
+
 This project provides a set of reinforcement learning environments for Unitree robots, built on top of [IsaacLab](https://github.com/isaac-sim/IsaacLab).
 
 Currently supports Unitree **Go2**, **H1** and **G1-29dof** robots.

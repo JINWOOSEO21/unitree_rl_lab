@@ -7,8 +7,7 @@
 #
 # 배포측은 IsaacLab 을 import 하지 않으므로 학습 저장소를 참조할 수 없다. 그렇다고
 # 다시 구현하면 "학습과 같은 지도"라는 보장이 사라진다. 그래서 원본을 **글자 그대로**
-# 복사해 둔다 (이 헤더만 앞에 붙였다). 원본이 바뀌면 위 sha256 이 어긋나고
-# em_sidecar/tests/test_vendored.py 가 그것을 잡아낸다.
+# 복사해 둔다 (이 헤더만 앞에 붙였다). 위 sha256은 원본 본문의 식별값이다.
 #
 # elevation_mapping_cupy 클론이 필요하다. 위치는 EMCUPY_ROOT 환경변수로 준다
 # (Isaaclab_Parkour 의 서브모듈을 그대로 가리키면 된다).

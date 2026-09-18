@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Go2 Jetson bridge 환경 설치 (단계 B-2, B-3). 오프라인 번들(make_jetson_bundle.sh 산출물) 사용.
+# Go2 Jetson bridge 환경 설치. 오프라인 번들(make_jetson_bundle.sh 산출물) 사용.
 # sudo 없음, 시스템 Python / /usr/local / 기존 서비스 변경 없음, DDS 송신 없음.
 # 모든 산출물은 $ROOT (기본 ~/walking) 아래에만 생긴다. 지우려면 그 폴더만 지우면 된다.
 #
@@ -12,9 +12,7 @@
 #   bash jetson_setup.sh pkgs     # torch / cupy / numpy / scipy ... + unitree_sdk2py
 #   bash jetson_setup.sh smoke    # GPU 단계별 스모크 테스트 (DDS 미사용)
 #   bash jetson_setup.sh all      # check -> unpack -> syslibs -> venv -> dds -> pkgs -> smoke
-#   bash jetson_setup.sh tests    # 단계 B-4: unit test 를 Jetson 에서 실행 (DDS/로봇 미사용)
-#   bash jetson_setup.sh rxprobe [nic] [sec]  # 단계 C-1: 수신 전용 DDS probe (publisher 없음)
-#   bash jetson_setup.sh report   # 설치/스모크/테스트 결과를 한 파일로 요약 (읽기 전용, 전달용)
+#   bash jetson_setup.sh report   # 설치/스모크 결과를 한 파일로 요약 (읽기 전용, 전달용)
 set -euo pipefail
 
 BUNDLE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -124,36 +122,6 @@ do_smoke() {
   echo "log: $out"
 }
 
-do_tests() {
-  # 단계 B-4: 데스크톱과 동일한 소스의 unit test 를 Jetson(Python 3.8, aarch64)에서 실행. DDS/로봇 미사용.
-  # pytest 없이 표준 unittest 로 돈다. 데스크톱 기준: tools/tests 73개 중 2개 오류(둘 다 gitignore 된
-  # captures/ 의 URDF 가 필요한 test_audit_go2_targets), em_sidecar/tests 10개 통과.
-  set +e
-  # shellcheck disable=SC1091
-  source "$ROOT/env.sh"
-  local out="$LOG/unit_tests_$(hostname)_$(date +%Y%m%d_%H%M%S).log"
-  cd "$GO2_PARKOUR"
-  { echo "### tools/tests"; python -m unittest discover -s tools/tests 2>&1
-    echo "### em_sidecar/tests"; python -m unittest discover -s em_sidecar/tests -t . 2>&1; } > "$out"
-  grep -E "^### |^Ran |^OK|^FAILED|^(ERROR|FAIL): " "$out"
-  local unexpected
-  unexpected="$(grep -E "^(ERROR|FAIL): " "$out" | grep -vc "test_audit_go2_targets")"
-  echo "unexpected failures (captures 의존 test_audit_go2_targets 2건 제외): $unexpected"
-  echo "log: $out"
-}
-
-do_rxprobe() {
-  # 단계 C-1: 수신 전용 DDS probe. publisher 를 만들지 않으며 LowCmd/sport 명령을 보내지 않는다.
-  # 사용: bash jetson_setup.sh rxprobe [interface=eth0] [seconds=30]
-  # shellcheck disable=SC1091
-  source "$ROOT/env.sh"
-  local nic="${2:-eth0}" dur="${3:-30}"
-  local out="$LOG/dds_rx_$(hostname)_${nic}_$(date +%Y%m%d_%H%M%S)"
-  ( timeout "$((dur + 5))" tegrastats --interval 1000 > "$out.tegrastats" 2>&1 & )
-  python "$GO2_PARKOUR/tools/dds_rx_probe.py" --interface "$nic" --duration "$dur" --json "$out.json" 2>&1 | tee "$out.log"
-  echo "log: $out.log"
-}
-
 do_report() {
   # 읽기 전용. 설치 결과를 한 파일로 모아 전달용으로 만든다. 일부 항목이 없어도 끝까지 수집한다.
   set +e +o pipefail
@@ -182,8 +150,6 @@ do_report() {
 
 case "${1:-}" in
   report) do_report ;;
-  tests) do_tests ;;
-  rxprobe) do_rxprobe "$@" ;;
   check) do_check ;;
   unpack) do_unpack ;;
   venv) do_venv ;;

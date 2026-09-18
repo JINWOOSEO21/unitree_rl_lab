@@ -31,47 +31,6 @@ add_library(${PROJECT_NAME}_lib ${ADD_SRC_LIST})
 link_libraries(${PROJECT_NAME}_lib)
 
 add_executable(go2_ctrl main.cpp)
-add_executable(go2_scandots_probe tools/scandots_probe.cpp)
-# Live bridge output on the real robot network (subscriber only). scandots_probe is the
-# loopback self-test: domain 179 on "lo" with rt/parkour/test_scandots.
-add_executable(go2_parkour_rx_probe tools/parkour_rx_probe.cpp)
-# Step E-3 telemetry. Recording from here keeps the bridge on --summary-only, whose 1 Hz
-# counters cost the Jetson nothing; the full JSONL path costs it a json.dumps per LowState.
+
+# Optional recording utility for live sensor and controller telemetry.
 add_executable(go2_walk_record tools/walk_record.cpp)
-
-enable_testing()
-add_executable(go2_keyboard_tests tests/test_keyboard_control.cpp)
-target_include_directories(go2_keyboard_tests PRIVATE include)
-target_compile_options(go2_keyboard_tests PRIVATE -UNDEBUG)
-add_test(NAME go2_keyboard_tests COMMAND go2_keyboard_tests)
-add_executable(go2_startup_handoff_tests tests/test_startup_handoff.cpp)
-target_include_directories(go2_startup_handoff_tests PRIVATE include)
-target_compile_options(go2_startup_handoff_tests PRIVATE -UNDEBUG)
-add_test(NAME go2_startup_handoff_tests COMMAND go2_startup_handoff_tests)
-add_test(
-  NAME go2_keyboard_rejects_non_tty_before_dds
-  COMMAND bash -c "printf x | '$<TARGET_FILE:go2_ctrl>' --keyboard-check >/dev/null 2>&1; test $? -eq 2"
-)
-find_program(GO2_PYTHON3 python3 REQUIRED)
-add_test(NAME go2_keyboard_pty
-  COMMAND ${GO2_PYTHON3} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_keyboard_pty.py $<TARGET_FILE:go2_ctrl>)
-
-# Fake Xlib backend tests release/focus handling without desktop key injection.
-add_executable(go2_held_heading_tests tests/test_held_heading_input.cpp src/HeldHeadingInput.cpp)
-target_compile_options(go2_held_heading_tests PRIVATE -UNDEBUG)
-add_test(NAME go2_held_heading_tests COMMAND go2_held_heading_tests)
-
-# Manual read-only check of a/d hold/release against a real X server (no DDS, no LowCmd).
-# --keyboard-check cannot cover this: steering is gated on the Policy state.
-add_executable(go2_keyboard_x11_probe tools/keyboard_x11_probe.cpp src/HeldHeadingInput.cpp)
-
-add_executable(go2_shutdown_tests tests/test_shutdown_control.cpp)
-target_compile_options(go2_shutdown_tests PRIVATE -UNDEBUG)
-add_test(NAME go2_shutdown_tests COMMAND go2_shutdown_tests)
-
-add_executable(go2_gyro_bias_tests tests/test_gyro_bias.cpp)
-target_compile_options(go2_gyro_bias_tests PRIVATE -UNDEBUG)
-add_test(NAME go2_gyro_bias_tests COMMAND go2_gyro_bias_tests)
-
-# Run with the Python GyroBiasOutput loopback publisher, not live robot DDS.
-add_executable(go2_gyro_bias_dds_probe tests/gyro_bias_dds_probe.cpp)

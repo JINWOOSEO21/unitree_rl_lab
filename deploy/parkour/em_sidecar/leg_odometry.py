@@ -15,8 +15,6 @@
 
     Δ_meas = Δ_true · (1 + b + bias) + n     b~N(0,0.02)  bias~U(±0.03)  n: 0.005 m walk
 
-이 추정기의 합격선은 그 범위 안에 드는 것이다 (tests/test_leg_odometry.py).
-
 방법
 ----
 접촉 중인 발은 지면에 정지해 있다고 본다. 발 i 의 base 프레임 위치 p_i(q) 를

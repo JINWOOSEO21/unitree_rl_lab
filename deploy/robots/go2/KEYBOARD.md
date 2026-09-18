@@ -71,14 +71,10 @@ Ctrl+C reaches both processes, so `tee` can exit before the descent finishes.
 The controller ignores SIGPIPE: a closed stdout/stderr pipe must not interrupt
 motor output or the down-pose confirmation. Subsequent messages may be absent
 from the terminal and tee log; add `--log` to retain them in `log/log.txt`.
-The PTY regression test covers closed log pipes and SIGINT/SIGTERM/SIGHUP in
-the real binary's no-DDS mode; state-machine tests cover the descent gates.
 
 SIGKILL (kill -9), crashes, machine/power loss, and external supervisors that
 force-kill after a timeout cannot run this shutdown sequence. Normal terminal
 closure commonly sends SIGHUP, but that depends on the terminal/supervisor.
-These changes have automated state-machine tests; actual robot descent on a
-shutdown signal still requires a supervised hardware check.
 
 ## Shared gyro bias
 
@@ -107,10 +103,6 @@ A race where validity disappears at actual entry cancels inference and returns
 to Stand. There is no silent zero-bias fallback. Quaternion is not modified.
 
 A bridge restart still interrupts scandots; existing terrain fault behavior
-remains. Restart the bridge outside Policy. Robot/LIO-only bridges do not provide
+remains. Restart the bridge outside Policy. Robot-odometry-only bridges do not provide
 this calibration stream yet, so cannot alone satisfy the new Policy entry gate.
 The same gate also applies in simulation; provide a calibration publisher there.
-
-Verification includes cache/session/timeout/invalid payload tests, entry gating,
-corrected observation/history tests, and a Python-to-C++ DDS probe restricted to
-loopback interface `lo`, domain 181. No hardware walking verification is implied.
