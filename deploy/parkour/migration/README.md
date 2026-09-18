@@ -515,6 +515,28 @@ Jetson eth0에서 같은 probe(`jetson_setup.sh rxprobe`)를 돌려 이 표와 �
 
 `smoke`의 `elevation-mapper` 줄에 나오는 update+sample p95/max가 bridge의 cloud/map 200ms deadline 대비 Jetson의 여유를 보여준다. bridge 실행 전에는 `source ~/walking/env.sh`를 적용한다.
 
+### Jetson ↔ 노트북 소스 동기화 검증 (2026-09-18)
+
+Jetson 에서 bridge 를 직접 고친 것이 남아 있는지 확인했다. **남은 것은 없다** — Jetson 의 구동 트리는
+로컬 저장소와 소스가 동일하다.
+
+Jetson 에는 git 저장소가 없고 (`~/walking/src/parkour` 는 평범한 파일 트리), `env.sh` 의
+`GO2_PARKOUR=/home/unitree/walking/src/parkour` 가 실제 구동 경로다. 이 트리를 통째로 받아 대조했다.
+
+| 확인 | 결과 |
+|---|---|
+| `tools/go2_sensor_bridge.py` | md5 `2702adaf…` 로 로컬과 **바이트 단위 동일** |
+| `src/parkour` 전체 (136 파일) | 공통 파일 중 내용이 다른 것은 `migration/README.md`, `migration/notebook_setup.sh` 둘뿐이고 **양쪽 다 로컬이 최신**. Jetson 고유 줄은 옛 브랜치명 `migration/jetson-galaxybook` 2줄이 전부 |
+| `.prepatch` / `.pre2` 백업 10개 | 전부 로컬 git 이력에 이미 있는 blob (`de7fe75`, `eecd3aa`, `434408f`). 즉 패치 **적용 전** 사본이며 새 수정이 아니다 |
+| `~/walking/*.py` 임시 스크립트 10개 | `bridge_stages.py`/`cloud_probe.py`/`low_cost.py` 는 저장소에 이미 있다 (각각 `go2_bridge_stage_probe.py`, `go2_cloud_latency_probe.py`, `go2_lowstate_cost.py`) |
+
+Jetson 의 수정은 전부 로컬에서 만든 `bridge_gap_recovery.patch` / `leg_rate.patch` 를 옮겨 적용한 것이라
+이미 로컬 커밋에 들어 있다. 백업 파일이 옛 blob 과 일치하는 것이 그 증거다.
+
+저장소에 없던 것은 `gap_probe.py` 하나뿐이라 `tools/go2_lowstate_gap_probe.py` 로 편입했다. 나머지
+(`an.py`, `ex2.py`, `extract.py`, `ff.py`, `ff2.py`, `mcast_listen.py`) 는 JSONL 로그를 한 번 쓰고 버리는
+파서라 저장소에 넣지 않았다. Jetson `~/walking` 에 그대로 있다.
+
 ## 알려진 주의점
 
 1. **git-lfs**: `.gitattributes`의 LFS 대상은 MuJoCo `.obj` 17개뿐이고 배포에 불필요하다. git-lfs가 없는 장비에서 전역 LFS 필터가 켜져 있으면 checkout이 실패하므로 `GIT_LFS_SKIP_SMUDGE=1`로 clone한다 (`notebook_setup.sh clone`에 반영).
