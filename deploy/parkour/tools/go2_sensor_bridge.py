@@ -3,14 +3,15 @@
 Optional --publish-scandots sends terrain only; no motor command or service RPC.
 Map processing uses
 the measured hardware LiDAR -> base_link transform and the offline map backend.
-Mapping uses leg odometry by default, or robot_odom with --odom robot.
+Mapping uses leg odometry by default; --odom mit selects body IMU/leg Kalman fusion.
+--odom robot selects robot_odom. MIT needs a stationary 10 s gyro calibration.
 Missing/stale/unsupported poses block scan output.
 """
 from __future__ import annotations
 
 import argparse
 from collections import deque
-from contextlib import redirect_stdout
+from contextlib import redirect_stdout, ExitStack
 import json
 from pathlib import Path
 import sys
@@ -25,18 +26,22 @@ from replay_go2_base_scan import (
 )
 from em_sidecar.go2_cloud import RAW_FRAME, raw_cloud_to_base
 from go2_leg_pose import LegPose
+from go2_mit_pose import MitPose
 from go2_gyro_bias_output import GyroBiasOutput
 from policy_input_guard import GuardConfig, validate_lowstate
 from go2_scandots_output import ScandotsOutput
 
 
-def low_row(msg):
-    return {
+def low_row(msg, include_acceleration=False):
+    row = {
         'imu_state': {'quaternion': list(msg.imu_state.quaternion),
                       'gyroscope': list(msg.imu_state.gyroscope)},
         'motor_state': [{'q': m.q, 'dq': m.dq} for m in msg.motor_state],
         'foot_force': list(msg.foot_force),
     }
+    if include_acceleration:
+        row['imu_state']['accelerometer'] = list(msg.imu_state.accelerometer)
+    return row
 
 
 def pose_row(msg):
@@ -59,7 +64,7 @@ def preceding_pose(poses, cloud_ns, max_age_ns=20_000_000):
             if cloud_ns - receipt > max_age_ns:
                 raise ValueError('odom_too_old')
             if row.get('pose_valid') is False:
-                raise ValueError('leg_odom_no_reliable_support')
+                raise ValueError('mit_odom_no_reliable_support' if row.get('source') == 'mit' else 'leg_odom_no_reliable_support')
             odom_pose(row)  # strict frame and finite-pose validation
             return row
     raise ValueError('missing_preceding_odom')
@@ -143,21 +148,31 @@ class BaseMapper:
                 valid[0].detach().cpu().numpy(), upper[0].detach().cpu().numpy())
 
 
-def dependencies():
+def dependencies(odom_source="leg"):
     from unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelSubscriber
     from unitree_sdk2py.idl.unitree_go.msg.dds_ import LowState_
     from unitree_sdk2py.idl.sensor_msgs.msg.dds_ import PointCloud2_
     from unitree_sdk2py.idl.nav_msgs.msg.dds_ import Odometry_
     import torch
     import cupy
+    if odom_source == 'mit':
+        # Defer participant creation until after interface-specific initialization.
+        from go2_mit_dds import subscriber_type
+        factory = [None]
+        def initialize(domain, interface):
+            ChannelFactoryInitialize(domain, interface)
+            factory[0] = subscriber_type(domain)
+        def subscribe(name, typ):
+            return factory[0](name, typ)
+        return initialize, subscribe, LowState_, PointCloud2_, Odometry_
     return ChannelFactoryInitialize, ChannelSubscriber, LowState_, PointCloud2_, Odometry_
 
 
 def run(interface, domain, duration, emcupy_root, emit, odom_source='leg', leg_contact_threshold=20.0,
-        publish_scandots=False, scandots_topic='rt/parkour/scandots', leg_odom_hz=100.0):
-    if odom_source not in ('leg', 'robot'):
-        raise ValueError('odom source must be leg or robot')
-    initialize, subscriber, low_type, cloud_type, odom_type = dependencies()
+        publish_scandots=False, scandots_topic='rt/parkour/scandots', leg_odom_hz=100.0, mit_odom_hz=75.0):
+    if odom_source not in ('leg', 'robot', 'mit'):
+        raise ValueError('odom source must be leg, mit or robot')
+    initialize, subscriber, low_type, cloud_type, odom_type = dependencies(odom_source)
     mapper = BaseMapper(emcupy_root)
     # Before any subscriber exists, so the JIT cannot starve the DDS reader. See warmup().
     mapper.warmup()
@@ -166,8 +181,10 @@ def run(interface, domain, duration, emcupy_root, emit, odom_source='leg', leg_c
     # reader, the tick loop and the GPU call all starve behind it. The map consumes pose at
     # 10 Hz and preceding_pose accepts one up to 20 ms old, so 100 Hz leaves margin on both.
     # The offline gate (em_sidecar/tests/test_leg_odometry.py) drives the estimator at 50 Hz.
-    leg = (LegPose(contact_threshold=leg_contact_threshold, rate_hz=leg_odom_hz)
-           if odom_source == 'leg' else None)
+    estimator_type = MitPose if odom_source == 'mit' else LegPose
+    estimator_hz = mit_odom_hz if odom_source == 'mit' else leg_odom_hz
+    leg = (estimator_type(contact_threshold=leg_contact_threshold, rate_hz=estimator_hz)
+           if odom_source in ('leg', 'mit') else None)
     lock = threading.RLock()
     poses = deque(maxlen=2000)
     latest = [None]
@@ -196,7 +213,7 @@ def run(interface, domain, duration, emcupy_root, emit, odom_source='leg', leg_c
     def low_callback(msg):
         now = time.monotonic_ns()
         try:
-            low = low_row(msg)
+            low = low_row(msg, include_acceleration=odom_source == 'mit')
             validate_lowstate(low, GuardConfig())
             pose = None
             gap_s = None
@@ -210,7 +227,7 @@ def run(interface, domain, duration, emcupy_root, emit, odom_source='leg', leg_c
                     if pose is not None:
                         poses.append((now, pose))
                         gap_s = pose['pose_gap_s']
-                        if gap_s is not None:
+                        if gap_s is not None or pose.get('map_reset_required', False):
                             rebuild_map[0] = True
                         if last_support[0] and not pose['pose_valid']:
                             generation[0] += 1
@@ -220,7 +237,7 @@ def run(interface, domain, duration, emcupy_root, emit, odom_source='leg', leg_c
             event = {'kind': 'low', 'receipt_ns': now, 'source_ns': now,
                      'source_id': int(msg.tick), 'low': low}
             if pose is not None:
-                event['leg_odometry'] = pose
+                event['mit_odometry' if odom_source == 'mit' else 'leg_odometry'] = pose
             emit(event)
             if gap_s is not None:
                 # Degraded, not fatal: bumps generation and invalidates the current output,
@@ -255,7 +272,11 @@ def run(interface, domain, duration, emcupy_root, emit, odom_source='leg', leg_c
 
     initialize(domain, interface)
     subs = []
+    runtime_stack = ExitStack()
     try:
+        if odom_source == 'mit':
+            from go2_mit_dds import initialized_heap_gc_scope
+            runtime_stack.enter_context(initialized_heap_gc_scope())
         if publish_scandots:
             output = ScandotsOutput(scandots_topic)
             if leg is not None:
@@ -276,6 +297,9 @@ def run(interface, domain, duration, emcupy_root, emit, odom_source='leg', leg_c
         last_cloud = None
         while (duration == 0 or time.monotonic()-start < duration) and not fatal.is_set():
             time.sleep(max(0, next_tick-time.monotonic()))
+            for sub in subs:
+                if hasattr(sub, 'check'):
+                    sub.check()
             loop_now = time.monotonic()
             next_tick = max(next_tick+0.1, loop_now)
             with lock:
@@ -318,7 +342,8 @@ def run(interface, domain, duration, emcupy_root, emit, odom_source='leg', leg_c
                     raise ValueError('cloud_too_old')
                 row = preceding_pose(pose_snapshot, receipt)
                 map_update_started = True
-                scan, valid, upper = mapper.update(cloud, row)
+                map_row = row.get('mapping_pose', row)
+                scan, valid, upper = mapper.update(cloud, map_row)
                 with lock:
                     now = time.monotonic_ns()
                     if fatal.is_set() or generation[0] != version:
@@ -328,9 +353,9 @@ def run(interface, domain, duration, emcupy_root, emit, odom_source='leg', leg_c
                     if last_low[0] is None or now-last_low[0] > 20_000_000:
                         raise ValueError('lowstate_too_old_after_mapping')
                     if not poses or poses[-1][1].get('pose_valid') is False:
-                        raise ValueError('leg_odom_no_reliable_support')
+                        raise ValueError('mit_odom_no_reliable_support' if odom_source == 'mit' else 'leg_odom_no_reliable_support')
                     if output is not None:
-                        position, _ = odom_pose(row)
+                        position, _ = odom_pose(map_row)
                         output.publish(scan, position, receipt, now)
                     emit({'kind': 'scan', 'receipt_ns': now,
                           'source_ns': receipt, 'source_id': stamp, 'scan': scan.tolist(),
@@ -355,8 +380,11 @@ def run(interface, domain, duration, emcupy_root, emit, odom_source='leg', leg_c
                 if output is not None:
                     output.close()
             finally:
-                if bias_output is not None:
-                    bias_output.close(0 if last_low[1] is None else last_low[1])
+                try:
+                    if bias_output is not None:
+                        bias_output.close(0 if last_low[1] is None else last_low[1])
+                finally:
+                    runtime_stack.close()
 
 
 def main():
@@ -369,15 +397,17 @@ def main():
     parser.add_argument('--publish-scandots', action='store_true', help='Publish terrain DDS for go2_ctrl')
     parser.add_argument('--scandots-topic', default='rt/parkour/scandots')
     parser.add_argument('--summary-only', action='store_true', help='Print counters once per second instead of all LowState rows')
-    parser.add_argument('--odom', choices=('leg','robot','lio'), default='leg')
+    parser.add_argument('--odom', choices=('leg','robot','lio','mit'), default='leg')
     parser.add_argument('--leg-contact-threshold', type=float, default=20.0,
                         help='Raw foot_force threshold; hardware calibration remains pending')
     parser.add_argument('--leg-odom-hz', type=float, default=100.0,
                         help='Leg estimator rate; 0 runs it on every LowState sample (500 Hz)')
+    parser.add_argument('--mit-odom-hz', type=float, default=75.0,
+                        help='MIT estimator rate; default 75 Hz leaves margin for mapping')
     parser.add_argument('--check-dependencies', action='store_true')
     args = parser.parse_args()
     if args.check_dependencies:
-        dependencies()
+        dependencies(args.odom)
         print('DDS types and torch/cupy import OK; no DDS participant created')
         return
     if args.odom == 'lio' and args.publish_scandots and args.scandots_topic != 'rt/parkour/scandots_lio_eval':
@@ -394,7 +424,7 @@ def main():
         with write_lock:
             if args.summary_only:
                 counters[event['kind']] += 1
-                pose = event.get('leg_odometry')
+                pose = event.get('mit_odometry', event.get('leg_odometry'))
                 if pose is not None:
                     last_calibration[0] = {key: pose[key] for key in
                         ('gyro_calibrated', 'gyro_bias_rad_s', 'gyro_calibration_elapsed_s')
@@ -407,7 +437,7 @@ def main():
                 last_report[0] = now
                 event = dict(counters, last_event=event['kind'], last_fault=last_reason[0],
                              dds_scandots=args.publish_scandots,
-                             leg_calibration=last_calibration[0])
+                             leg_calibration=last_calibration[0], odom_source=args.odom)
             output.write(json.dumps(event, allow_nan=False, separators=(',', ':'))+'\n')
             output.flush()
     with redirect_stdout(sys.stderr):
@@ -419,7 +449,7 @@ def main():
             else:
                 code = run(args.interface, args.domain, args.duration, args.emcupy_root, emit,
                            args.odom, args.leg_contact_threshold, args.publish_scandots,
-                           args.scandots_topic, leg_odom_hz=args.leg_odom_hz)
+                           args.scandots_topic, leg_odom_hz=args.leg_odom_hz, mit_odom_hz=args.mit_odom_hz)
         except KeyboardInterrupt:
             code = 0
         except Exception as exc:
