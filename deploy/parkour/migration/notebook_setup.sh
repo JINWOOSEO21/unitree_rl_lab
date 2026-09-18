@@ -4,7 +4,7 @@
 #
 #   bash notebook_setup.sh deps      # 필요한 apt 명령 출력 + 누락 패키지 점검
 #   bash notebook_setup.sh clone     # unitree_rl_lab(BRANCH) + unitree_sdk2(SDK_COMMIT) clone
-#   bash notebook_setup.sh sdk       # unitree_sdk2 를 $SDK_PREFIX 에 설치 (sudo 불필요)
+#   bash notebook_setup.sh sdk       # SDK 원본의 헤더/라이브러리 확인 (별도 설치 없음)
 #   bash notebook_setup.sh build     # go2_ctrl 새 build (데스크톱 build 디렉터리 복사 금지)
 #   bash notebook_setup.sh manifest  # 버전/hash 기록
 #   bash notebook_setup.sh run <nic> # 실제 LowCmd. 사용자 지시가 있을 때만.
@@ -15,14 +15,14 @@ BRANCH="${BRANCH:-main}"
 RL_LAB_URL="${RL_LAB_URL:-https://github.com/JINWOOSEO21/unitree_rl_lab.git}"
 SDK_URL="${SDK_URL:-https://github.com/unitreerobotics/unitree_sdk2.git}"
 SDK_COMMIT="${SDK_COMMIT:-9754cd1}"          # 데스크톱에서 검증된 unitree_sdk2 commit
-SDK_PREFIX="${SDK_PREFIX:-$HOME/opt/unitree_sdk2}"
+SDK_ROOT="${SDK_ROOT:-$CODES/unitree_sdk2}"
 DEPLOY="$CODES/unitree_rl_lab/deploy"
 GO2="$DEPLOY/robots/go2"
 APT_PKGS=(build-essential cmake git libboost-program-options-dev libyaml-cpp-dev
           libeigen3-dev libfmt-dev libx11-dev python3)
 
 # Require an explicit NIC and isolate this process from ROS DDS environment settings.
-# The build pins DDS libraries to SDK_PREFIX using DT_RPATH.
+# The build pins DDS libraries to SDK_ROOT using DT_RPATH.
 go2_env() {
   [ -n "${CYCLONEDDS_URI:-}" ] && echo "[go2_env] CYCLONEDDS_URI 제거: $CYCLONEDDS_URI" >&2
   env -u CYCLONEDDS_URI "$@"
@@ -43,29 +43,28 @@ clone)
   mkdir -p "$CODES"
   # LFS 대상은 MuJoCo .obj 메시뿐이며 배포에 불필요하다. git-lfs 없이도 clone 되도록 smudge 를 건너뛴다.
   [ -d "$CODES/unitree_rl_lab/.git" ] || GIT_LFS_SKIP_SMUDGE=1 git clone --branch "$BRANCH" "$RL_LAB_URL" "$CODES/unitree_rl_lab"
-  [ -d "$CODES/unitree_sdk2/.git" ] || git clone "$SDK_URL" "$CODES/unitree_sdk2"
-  git -C "$CODES/unitree_sdk2" checkout --detach "$SDK_COMMIT"
+  [ -d "$SDK_ROOT/.git" ] || git clone "$SDK_URL" "$SDK_ROOT"
+  git -C "$SDK_ROOT" checkout --detach "$SDK_COMMIT"
   ;;
 sdk)
-  cmake -S "$CODES/unitree_sdk2" -B "$CODES/unitree_sdk2/build" -DBUILD_EXAMPLES=OFF -DCMAKE_INSTALL_PREFIX="$SDK_PREFIX"
-  cmake --build "$CODES/unitree_sdk2/build" -j"$(nproc)"
-  cmake --install "$CODES/unitree_sdk2/build" | tail -n 1
-  ls "$SDK_PREFIX/lib"
+  SDK_ARCH="$(uname -m)"
+  for path in include/unitree/robot/channel/channel_factory.hpp \
+      "lib/$SDK_ARCH/libunitree_sdk2.a" \
+      "thirdparty/lib/$SDK_ARCH/libddsc.so.0" \
+      "thirdparty/lib/$SDK_ARCH/libddscxx.so.0"; do
+    [ -f "$SDK_ROOT/$path" ] || { echo "Missing SDK file: $SDK_ROOT/$path" >&2; exit 1; }
+  done
+  echo "SDK ready: $SDK_ROOT (no separate installation)"
   ;;
 build)
-  # CMakeLists 의 /usr/local/include/ddscxx 경로는 없으면 무시된다. prefix 를 플래그로 연결한다.
-  # --disable-new-dtags 는 DT_RUNPATH 대신 DT_RPATH 를 쓴다. ROS 2 가 설치된 장비에서는
-  # .bashrc 의 setup.bash 가 LD_LIBRARY_PATH 에 /opt/ros/<distro>/lib/x86_64-linux-gnu 를 넣고,
-  # loader 는 LD_LIBRARY_PATH 를 DT_RUNPATH 보다 먼저 본다. 그러면 ROS 의 libddsc.so.0 이
-  # SDK 것보다 우선 잡혀서 ROS Cyclone C 코어 + unitree ddscxx C++ 바인딩이 섞인다
-  # (ROS 는 libddscxx 를 배포하지 않으므로 ddscxx 만 prefix 에서 온다).
-  # DT_RPATH 는 LD_LIBRARY_PATH 보다 먼저 검색되므로 ROS 를 source 한 셸에서도 SDK 것이 잡힌다.
+  # Clear legacy manual include/link flags when reusing an installed-SDK build cache.
+  # CMake now gets headers and libraries from the source checkout's SDK targets.
   cmake -S "$GO2" -B "$GO2/build" \
     -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_CXX_FLAGS="-I$SDK_PREFIX/include -I$SDK_PREFIX/include/ddscxx" \
-    -DCMAKE_EXE_LINKER_FLAGS="-L$SDK_PREFIX/lib -Wl,--disable-new-dtags -Wl,-rpath,$SDK_PREFIX/lib"
+    -DUNITREE_SDK_ROOT="$SDK_ROOT" \
+    -DCMAKE_CXX_FLAGS= -DCMAKE_EXE_LINKER_FLAGS=
   cmake --build "$GO2/build" -j"$(nproc)"
-  echo "--- go2_ctrl 공유 라이브러리 해석 (not found 없이 전부 $SDK_PREFIX 여야 함)"
+  echo "DDS libraries must resolve under $SDK_ROOT/thirdparty/lib:"
   ldd "$GO2/build/go2_ctrl" | grep -E "ddsc|onnxruntime|not found" || true
   ;;
 run)
@@ -86,7 +85,7 @@ manifest)
   lsb_release -ds; gcc --version | head -1; cmake --version | head -1
   dpkg -l libboost-program-options-dev libyaml-cpp-dev libeigen3-dev libfmt-dev libx11-dev 2>/dev/null | awk '/^ii/{print $2, $3}'
   echo "unitree_rl_lab $(git -C "$CODES/unitree_rl_lab" rev-parse --short HEAD) dirty=$(git -C "$CODES/unitree_rl_lab" status --short | wc -l)"
-  echo "unitree_sdk2   $(git -C "$CODES/unitree_sdk2" rev-parse --short HEAD)"
+  echo "unitree_sdk2   $(git -C "$SDK_ROOT" rev-parse --short HEAD)"
   (cd "$CODES/unitree_rl_lab/deploy" && sha256sum parkour/contract/policy.onnx parkour/contract/deploy.yaml \
      parkour/contract/policy_meta.json parkour/contract/em_geometry.npz \
      thirdparty/onnxruntime-linux-x64-1.22.0/lib/libonnxruntime.so.1.22.0)
