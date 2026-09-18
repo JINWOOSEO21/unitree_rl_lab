@@ -35,6 +35,9 @@ add_executable(go2_scandots_probe tools/scandots_probe.cpp)
 # Live bridge output on the real robot network (subscriber only). scandots_probe is the
 # loopback self-test: domain 179 on "lo" with rt/parkour/test_scandots.
 add_executable(go2_parkour_rx_probe tools/parkour_rx_probe.cpp)
+# Step E-3 telemetry. Recording from here keeps the bridge on --summary-only, whose 1 Hz
+# counters cost the Jetson nothing; the full JSONL path costs it a json.dumps per LowState.
+add_executable(go2_walk_record tools/walk_record.cpp)
 
 enable_testing()
 add_executable(go2_keyboard_tests tests/test_keyboard_control.cpp)
