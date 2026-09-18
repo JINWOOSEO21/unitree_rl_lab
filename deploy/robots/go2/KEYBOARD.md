@@ -66,6 +66,14 @@ still take priority and can lead to Passive; shutdown does not automatically
 re-energize a Passive robot. Repeated exit signals do not bypass confirmation.
 Keyboard/joystick mode commands are suppressed while shutdown is pending.
 
+Logging through `... 2>&1 | tee walk.log` also supports controlled shutdown.
+Ctrl+C reaches both processes, so `tee` can exit before the descent finishes.
+The controller ignores SIGPIPE: a closed stdout/stderr pipe must not interrupt
+motor output or the down-pose confirmation. Subsequent messages may be absent
+from the terminal and tee log; add `--log` to retain them in `log/log.txt`.
+The PTY regression test covers closed log pipes and SIGINT/SIGTERM/SIGHUP in
+the real binary's no-DDS mode; state-machine tests cover the descent gates.
+
 SIGKILL (kill -9), crashes, machine/power loss, and external supervisors that
 force-kill after a timeout cannot run this shutdown sequence. Normal terminal
 closure commonly sends SIGHUP, but that depends on the terminal/supervisor.

@@ -173,6 +173,10 @@ void init_fsm_state(bool simulator)
 
 int main(int argc, char** argv)
 {
+    // Ctrl+C also terminates a foreground `tee`. If its pipe closes, logging
+    // must not terminate the controller with SIGPIPE before StandDown finishes.
+    // Install before any output (including keyboard help and startup logging).
+    std::signal(SIGPIPE, SIG_IGN);
     const auto options = parse_local_options(argc, argv);
     if (options.keyboard && !terminal_is_foreground()) {
         std::cerr << "--keyboard requires an interactive foreground terminal; DDS was not initialized.\n";
