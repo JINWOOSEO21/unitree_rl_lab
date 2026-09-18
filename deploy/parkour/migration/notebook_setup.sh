@@ -29,8 +29,25 @@ APT_PKGS=(build-essential cmake git libboost-program-options-dev libyaml-cpp-dev
 # 이 노트북의 ~/.zshrc 는 CYCLONEDDS_URI 로 ~/cyclonedds.xml 을 전역 지정하는데,
 # 그 파일은 Domain id="any" 아래에 NetworkInterface name="wlo1",
 # AllowMulticast false, 그리고 무관한 네트워크(192.168.35.x)의 Peers 를 강제한다.
-# 그대로 두면 go2_ctrl/probe 에 유선 인터페이스를 인자로 넘겨도 CycloneDDS 가
-# Wi-Fi 에 바인딩되고 멀티캐스트 discovery 가 꺼져서 로봇을 찾지 못한다.
+# ROS 2 에는 맞는 설정이지만 Go2 에는 전부 틀렸다.
+#
+# 이 주석은 원래 "그대로 두면 유선 인터페이스를 인자로 넘겨도 Wi-Fi 에 바인딩된다"
+# 고 적혀 있었다. C++ go2_ctrl 경로에서는 사실이 아니다 (2026-09-18 실측 + 바이너리
+# 분석으로 정정). ChannelFactory::Init(domain, nic) 은 nic 가 비어 있지 않으면
+#   <CycloneDDS><Domain Id="any"><General><Interfaces>
+#     <NetworkInterface name="<nic>" priority="default" multicast="default"/>
+#   </Interfaces></General></Domain></CycloneDDS>
+# 를 메모리에서 만들어 dds_create_domain() 에 직접 넘긴다. 이게
+# dds_create_participant() 보다 먼저 돌아 domain 0 을 만들어 두므로, participant 가
+# CYCLONEDDS_URI 를 읽을 때는 이미 늦는다 — 환경변수 XML 은 병합이 아니라 통째로
+# 버려진다. libunitree_sdk2.a 에는 getenv 참조 자체가 없다.
+# 실측: go2_state_probe --network <유선nic> 은 CYCLONEDDS_URI 유무와 무관하게
+# 239.255.0.1 을 유선 NIC 에서 가입했다 (실행 전 없음 → 실행 중 가입 → 종료 후 없음).
+#
+# 따라서 진짜 규칙은 "환경변수를 지워라"가 아니라 "--network 를 반드시 넘겨라"다.
+# param.h 의 기본값이 빈 문자열이고, 비어 있으면 dds_create_domain 을 건너뛰어
+# CYCLONEDDS_URI 가 그대로 먹는다. 아래 제거는 그 실수와 Python 도구
+# (unitree_sdk2py, 별도 경로라 미검증) 에 대한 보험으로 남겨 둔다.
 #
 # .zshrc 와 ROS 2 환경은 건드리지 않고, 여기서 띄우는 프로세스에서만 제거한다.
 # libddsc 를 DT_RPATH 로 SDK 것에 고정한 것과 같은 계열의 격리다 (build 주석 참고).

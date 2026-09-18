@@ -545,6 +545,46 @@ Jetson 의 수정은 전부 로컬에서 만든 `bridge_gap_recovery.patch` / `l
 4. **captures 의존 도구**: `audit_go2_targets.py`, `check_go2_repeatability.py`, `shadow_go2_policy.py` 등 오프라인 분석 도구는 데스크톱 캡처가 필요하다. 이식 대상 장비에서는 실행하지 않는다.
 5. **CycloneDDS 버전 혼입 (양쪽 장비 공통)**: 노트북은 ROS 2 Humble이 `LD_LIBRARY_PATH`로 SDK의 `libddsc.so.0`을 가로챘고, `-Wl,--disable-new-dtags`로 고쳤다 (위 "A-2 발견"). Jetson도 같은 종류의 위험이 확인됐다 — 시스템에 `libddsc.so.0.11.0`(0.11 계열)이 있고 ROS launch 서비스들이 상시 구동되며 전역 `CYCLONEDDS_URI`가 설정돼 있는데, `unitree_sdk2_python`은 `cyclonedds==0.10.2`를 고정한다. 그래서 Jetson은 C 0.10.2를 `~/walking/opt`에 별도 prefix로 빌드하고 `env.sh`로만 연결한다. **양쪽 모두, 실행 직전에 실제로 로드되는 DDS 라이브러리를 확인할 것** — 노트북은 `ldd build/go2_ctrl`, Jetson은 bridge venv에서 `python -c "import cyclonedds; ..."` 후 `/proc/<pid>/maps`. 링크가 아니라 **런타임 해석**이 기준이다.
 6. **wayland에서는 a/d 조향 불가**: `Go2HeldHeadingInput`은 `XGetInputFocus`/`XQueryKeymap`을 쓴다. wayland 세션에서는 focus가 `None`으로 잡혀 조향이 비활성화된다 (crash 없이 비활성화). 실제 주행 세션은 반드시 "Ubuntu on Xorg"로 로그인한다.
+7. **`CYCLONEDDS_URI` 는 `--network` 를 넘기는 한 무해하다 (2026-09-18 정정)**: 아래 "CYCLONEDDS_URI 실측" 참고. 지켜야 할 규칙은 환경변수 제거가 아니라 **`--network <nic>` 를 반드시 넘기는 것**이다.
+8. **ufw 규칙을 NIC 이름에 걸지 말 것**: 유선 어댑터가 바뀔 때마다(`enx` 이름은 MAC 파생) 규칙이 무효가 되어 `CheckMode ... 3104` 로 재발한다. 실제로 `enx80691a73e263` → `enp5s0` → `enx00e04c637ac7` 세 번 겪었다. 서브넷에 걸면 재발하지 않는다: `sudo ufw allow in from 192.168.123.0/24 comment 'Go2 DDS'`. 증상은 ping 은 되는데(conntrack 이 응답을 RELATED/ESTABLISHED 로 통과) DDS 만 안 되는 것이고, 확인은 `journalctl -k | grep "UFW BLOCK"` 에서 `DST=239.255.0.1` 줄을 찾는다.
+
+### CYCLONEDDS_URI 실측 (2026-09-18) — 노트북 C++ 경로에서는 적용되지 않는다
+
+`notebook_setup.sh` 주석은 원래 "유선 인터페이스를 인자로 넘겨도 CYCLONEDDS_URI 때문에 Wi-Fi 에
+바인딩된다"고 적고 있었다. **C++ `go2_ctrl` 경로에서는 사실이 아니다.** 실측과 바이너리 분석 두 갈래로
+확인했다.
+
+실측 — `go2_state_probe --network enx00e04c637ac7` (수신 전용) 를 띄우고 `/proc/net/igmp` 관찰:
+
+| 조건 | 실행 전 | 실행 중 | 종료 후 |
+|---|---|---|---|
+| `CYCLONEDDS_URI` 설정됨 | 가입 없음 | **`239.255.0.1` → `enx00e04c637ac7`** | 가입 없음 |
+| `CYCLONEDDS_URI` 제거 | 가입 없음 | **`239.255.0.1` → `enx00e04c637ac7`** | 가입 없음 |
+
+두 조건이 동일하다. XML 의 `NetworkInterface name="wlo1"` 도, `AllowMulticast false` 도 적용되지 않았다
+(멀티캐스트 가입 자체가 일어났다).
+
+기전 — `ChannelFactory::Init(domain, nic)` 은 `nic` 가 비어 있지 않으면 다음을 메모리에서 만들어
+`dds_create_domain()` 에 직접 넘긴다:
+
+```xml
+<CycloneDDS><Domain Id="any"><General><Interfaces>
+  <NetworkInterface name="<nic>" priority="default" multicast="default"/>
+</Interfaces></General></Domain></CycloneDDS>
+```
+
+`<Interfaces>` 만 지정하고 나머지는 CycloneDDS 기본값이다. `dds_create_domain()` 이
+`dds_create_participant()` 보다 먼저 돌아 domain 0 을 만들어 두므로, participant 가 `CYCLONEDDS_URI` 를
+읽을 때는 이미 늦는다 — 환경변수 XML 은 병합되지 않고 **통째로 버려진다**. `libunitree_sdk2.a` 에는
+`getenv` 참조 자체가 없고, `libddsc.so` 에서 `CYCLONEDDS_URI` 를 읽는 곳은 `dds_create_participant`
+뿐이다 (`dds_create_domain` 에는 없다).
+
+**함정**: `deploy/include/param.h` 의 `--network` 기본값은 빈 문자열이다. 비어 있으면
+`dds_create_domain` 을 건너뛰고 `dds_create_participant` 가 `CYCLONEDDS_URI` 를 읽는다. 즉 인자를
+빠뜨리면 그때는 ROS 2 설정이 그대로 먹는다.
+
+`go2_env()` 의 제거는 그 실수와 Python 경로(`unitree_sdk2py`, 미검증) 에 대한 보험으로 남겨 둔다.
+이전에 이 환경변수를 3104 의 원인으로 지목했던 것도 오진이었다 — 원인은 ufw 였다 (주의점 8).
 
 ## 다음 단계
 
