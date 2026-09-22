@@ -49,6 +49,11 @@ def main() -> int:
     ap.add_argument("--out-dir", required=True, help="unitree_robots/go2")
     ap.add_argument("--hfield-name", default="parkour_terrain.hfield")
     ap.add_argument("--scene-name", default="scene_parkour.xml")
+    ap.add_argument(
+        "--probe-name",
+        default="parkour_terrain_probe.npz",
+        help="다른 지형을 구울 때 기본 지형의 probe 를 덮어쓰지 않게 이름을 바꾼다",
+    )
     a = ap.parse_args()
 
     m = np.load(a.meta)
@@ -131,9 +136,8 @@ def main() -> int:
         wx = x0 + i * res - spawn[0]
         wy = y0 + j * res - spawn[1]
         probe.append((wx, wy, float(H[j, i])))
-    np.savez(out_dir / "parkour_terrain_probe.npz", probe=np.array(probe),
-             spawn_world=spawn, res=res)
-    print(f"probe  : {out_dir / 'parkour_terrain_probe.npz'} (200점 기대 높이)")
+    np.savez(out_dir / a.probe_name, probe=np.array(probe), spawn_world=spawn, res=res)
+    print(f"probe  : {out_dir / a.probe_name} (200점 기대 높이)")
     return 0
 
 

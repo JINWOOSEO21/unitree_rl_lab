@@ -21,9 +21,10 @@ sim 시각 기준으로 관절각·자세(lowstate_raw, 500 Hz)와 tick 별 scan
 odometry
 --------
   기록의 base_pos 는 사이드카가 **지도에 쓴** base 위치다. sport(+shadow) 모드에서는 GT 이고
-  leg 모드에서는 leg odometry 추정치다. GT 패널은 진짜 위치의 지형이어야 하므로 leg 기록에서는
-  gt_pos(sportmodestate → base 원점) 로 샘플하고, 추정 패널 캡션에 odometry 오차(est − GT 의
-  xy 거리와 z)를 함께 적는다. 왼쪽 3D 렌더는 항상 sport 원시 위치(진짜 자세)를 쓴다.
+  leg / mit 모드에서는 그 odometry 추정치다. GT 패널은 진짜 위치의 지형이어야 하므로 그런
+  기록에서는 gt_pos(sportmodestate → base 원점) 로 샘플하고, 추정 패널 캡션에 odometry 오차
+  (est − GT 의 xy 거리와 z)를 함께 적는다. mit 는 지도 자세도 추정기 것이라 GT 패널의 yaw 는
+  gt_quat(lowstate IMU)를 쓴다. 왼쪽 3D 렌더는 항상 sport 원시 위치(진짜 자세)를 쓴다.
 """
 from __future__ import annotations
 
@@ -49,9 +50,23 @@ from em_sidecar.terrain import META, Terrain  # noqa: E402
 
 MJ_ROBOTS = Path.home() / "workspace/codes/unitree_mujoco/unitree_robots/go2"
 SCENES = {
-    # 씬 파일, terrain_meta 기준 스폰(월드 원점이 되는 meta 좌표), 월드 z 보정
-    "ramp": ("scene_parkour.xml", None, 0.0),
-    "stairs": ("scene_parkour_stairs.xml", (-11.0, 2.0), -0.012),
+    # 씬 파일, terrain_meta 기준 스폰(월드 원점이 되는 meta 좌표), 월드 z 보정, terrain_meta
+    "ramp": ("scene_parkour.xml", None, 0.0, META),
+    "stairs": ("scene_parkour_stairs.xml", (-11.0, 2.0), -0.012, META),
+    # 램프 높이 3배(기울기 유지) 시험 지형 — terrain/make_tall_ramp.py
+    "ramp3x": (
+        "scene_parkour_ramp3x.xml",
+        None,
+        0.0,
+        META.with_name("terrain_meta_ramp3x.npz"),
+    ),
+    # 같은 높이(1.16 m)에 기울기 15° — make_tall_ramp.py --slope-deg 15 --height 1.16 --tag ramp15
+    "ramp15": (
+        "scene_parkour_ramp15.xml",
+        None,
+        0.0,
+        META.with_name("terrain_meta_ramp15.npz"),
+    ),
 }
 # IsaacLab 관절 순서(hip×4, thigh×4, calf×4; 다리 FL FR RL RR) → MJCF qpos 순서(다리별 hip,thigh,calf)
 IL_TO_MJ = [4 * j + leg for leg in range(4) for j in range(3)]
@@ -172,7 +187,7 @@ def main() -> int:
     ap.add_argument("--vmax", type=float, default=0.8)
     a = ap.parse_args()
 
-    scene_file, spawn, zfix = SCENES[a.scene]
+    scene_file, spawn, zfix, meta_path = SCENES[a.scene]
     r = load_record(Path(a.record))
     t_raw, q_il, quat, base = raw_streams(r)
     t_em = r["stamp"].astype(np.float64)
@@ -180,17 +195,26 @@ def main() -> int:
     base_em = r["base_pos"].astype(np.float64)           # tick 시점 base 원점 (지도에 쓴 위치)
     quat_em = r["base_quat"].astype(np.float64)
     odom_src = str(r["odom_source"]) if "odom_source" in r.files else "sport"
-    leg_mode = odom_src.startswith("leg")
+    leg_mode = odom_src.startswith(("leg", "mit"))  # 자체 추정 odometry 로 만든 지도
+    odom_name = "mit" if odom_src.startswith("mit") else "leg"
     if leg_mode:
         if "gt_pos" not in r.files or not np.isfinite(r["gt_pos"]).any():
-            raise SystemExit(f"{a.record}: leg 기록인데 gt_pos 가 없다 — GT 패널을 그릴 수 없다")
-        base_gt = r["gt_pos"].astype(np.float64)         # 진짜 base 원점 (GT 패널용)
+            raise SystemExit(
+                f"{a.record}: {odom_name} 기록인데 gt_pos 가 없다 — GT 패널을 그릴 수 없다"
+            )
+        base_gt = r["gt_pos"].astype(np.float64)  # 진짜 base 원점 (GT 패널용)
     else:
-        base_gt = base_em                                # sport 모드: 지도 위치가 곧 GT
-    n_em = min(len(t_em), len(scan_est), len(base_em), len(quat_em), len(base_gt))
-    print(f"odometry: {odom_src}" + ("  (GT 패널은 gt_pos, 캡션에 odometry 오차)" if leg_mode else ""))
+        base_gt = base_em  # sport 모드: 지도 위치가 곧 GT
+    quat_gt = r["gt_quat"].astype(np.float64) if "gt_quat" in r.files else quat_em
+    n_em = min(
+        len(t_em), len(scan_est), len(base_em), len(quat_em), len(base_gt), len(quat_gt)
+    )
+    print(
+        f"odometry: {odom_src}"
+        + ("  (GT 패널은 gt_pos, 캡션에 odometry 오차)" if leg_mode else "")
+    )
 
-    terr = Terrain(META)
+    terr = Terrain(meta_path)
     if spawn is not None:
         terr.spawn[:2] = spawn
     kin = Go2Kinematics(PARKOUR / "contract" / "em_geometry.npz")
@@ -233,12 +257,19 @@ def main() -> int:
         cam.lookat[:] = base[i] + np.array([0.0, 0.0, 0.05])
         renderer.update_scene(data, cam, opt)
         left = cv2.cvtColor(renderer.render(), cv2.COLOR_RGB2BGR)
-        cv2.putText(left, f"{a.scene}  odom={'leg' if leg_mode else 'GT'}  t={tf - t0:5.2f}s  "
-                          f"x={base[i, 0]:+.2f} z={base[i, 2]:.2f}",
-                    (10, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        cv2.putText(
+            left,
+            f"{a.scene}  odom={odom_name if leg_mode else 'GT'}  t={tf - t0:5.2f}s  "
+            f"x={base[i, 0]:+.2f} z={base[i, 2]:.2f}",
+            (10, 26),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (255, 255, 255),
+            2,
+        )
         # --- scandots (tick 시점 진짜 base·yaw 에서 GT 를 샘플. leg 모드면 gt_pos) ---
         bz = base_gt[j, 2]
-        yaw = yaw_from_quat(quat_em[j])
+        yaw = yaw_from_quat(quat_gt[j])
         cy_, sy_ = np.cos(yaw), np.sin(yaw)
         px = base_gt[j, 0] + cy_ * scan_xy[:, 0] - sy_ * scan_xy[:, 1]
         py = base_gt[j, 1] + sy_ * scan_xy[:, 0] + cy_ * scan_xy[:, 1]
@@ -252,9 +283,11 @@ def main() -> int:
                           "terrain_meta @ same 132 pts, 0.15 m")
         if leg_mode:
             d = base_em[j] - base_gt[j]
-            sub = (f"|est-GT| {err * 100:.1f} cm  odom err xy {np.hypot(d[0], d[1]) * 100:.0f} "
-                   f"z {d[2] * 100:+.0f} cm")
-            title = "estimated (EM, leg odom)"
+            sub = (
+                f"|est-GT| {err * 100:.1f} cm  odom err xy {np.hypot(d[0], d[1]) * 100:.0f} "
+                f"z {d[2] * 100:+.0f} cm"
+            )
+            title = f"estimated (EM, {odom_name} odom)"
         else:
             sub = f"policy obs[53:185]  |est-GT| {err * 100:.1f} cm"
             title = "estimated (EM sidecar)"
