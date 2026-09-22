@@ -1,13 +1,14 @@
 # ===========================================================================
-# VENDORED — 수정하지 말 것.
+# VENDORED — 수정하지 말 것. (ruff/black 등 포매터 대상에서도 제외할 것)
 #
 #   출처  : Isaaclab_Parkour  parkour_isaaclab/envs/mdp/elevation_map_backend.py
-#   커밋  : 4e25a85e7fa8589e9f94dfdd00fd3b55c46616a4  (branch sim2sim)
-#   sha256: a36bb062b0c9d5f90768a3ccffc8834a75ac9d1758a4397b3e13c18691e09b97
+#   커밋  : 3571e0f26b054bd6a179b33c65bf97815616205a  (branch master)
+#   sha256: 3a27a62f5036d7c3d29e864d5c8affe0cf48dbfab450c9c9b1ed728e9a157ccc
 #
 # 배포측은 IsaacLab 을 import 하지 않으므로 학습 저장소를 참조할 수 없다. 그렇다고
 # 다시 구현하면 "학습과 같은 지도"라는 보장이 사라진다. 그래서 원본을 **글자 그대로**
-# 복사해 둔다 (이 헤더만 앞에 붙였다). 위 sha256은 원본 본문의 식별값이다.
+# 복사해 둔다 (이 헤더만 앞에 붙였다). 위 sha256은 원본 본문의 식별값이며,
+# `tail -n +16 <이 파일> | sha256sum` 으로 검증한다.
 #
 # elevation_mapping_cupy 클론이 필요하다. 위치는 EMCUPY_ROOT 환경변수로 준다
 # (Isaaclab_Parkour 의 서브모듈을 그대로 가리키면 된다).
@@ -25,6 +26,7 @@
 - 이 모듈은 isaaclab 을 import 하지 않는다. cupy/em_cupy 는 지연 import 라
   샘플링 순수 함수(sample_scan_heights)는 CPU 단위 테스트에서 그대로 쓸 수 있다.
 """
+
 from __future__ import annotations
 
 import os
@@ -56,8 +58,7 @@ def _find_emcupy_root() -> Path:
             return root
     raise ImportError(
         "elevation_mapping_cupy 클론을 찾지 못했다. repo root 에 클론하거나 "
-        "EMCUPY_ROOT 환경변수로 위치를 지정할 것. 찾아본 곳: "
-        + ", ".join(str(c) for c in candidates)
+        "EMCUPY_ROOT 환경변수로 위치를 지정할 것. 찾아본 곳: " + ", ".join(str(c) for c in candidates)
     )
 
 
@@ -72,6 +73,7 @@ def _import_emcupy():
     if script_dir not in sys.path:
         sys.path.insert(0, script_dir)
     import cupy as cp
+
     from elevation_mapping_cupy import ElevationMap, Parameter  # noqa: E402
 
     # 함정 1: elevation_mapping.py 가 import 시점에 cupy 전역 allocator 를
@@ -124,9 +126,7 @@ def sample_scan_heights(
     fv = (v - v0.to(v.dtype)).unsqueeze(-1)
 
     # 4 이웃 (dx, dy) 와 bilinear 가중치
-    w = torch.cat(
-        [(1 - fu) * (1 - fv), (1 - fu) * fv, fu * (1 - fv), fu * fv], dim=-1
-    )  # (N,P,4)
+    w = torch.cat([(1 - fu) * (1 - fv), (1 - fu) * fv, fu * (1 - fv), fu * fv], dim=-1)  # (N,P,4)
     ux = torch.stack([u0, u0, u0 + 1, u0 + 1], dim=-1)  # (N,P,4)
     vy = torch.stack([v0, v0 + 1, v0, v0 + 1], dim=-1)
 
@@ -278,9 +278,7 @@ class ElevationMapBackend:
 
     def sample(self, points_xy: torch.Tensor, base_z: torch.Tensor):
         """scandot 위치 샘플 → (h_obs, valid_frac). 규약은 sample_scan_heights 참조."""
-        return sample_scan_heights(
-            self.layers(), self.centers(), points_xy, base_z, self.resolution, self.cell_n
-        )
+        return sample_scan_heights(self.layers(), self.centers(), points_xy, base_z, self.resolution, self.cell_n)
 
 
 # ---------------------------------------------------------------------------
@@ -289,9 +287,8 @@ class ElevationMapBackend:
 # 위 ElevationMapBackend(인스턴스 루프)는 tick 당 인스턴스 x 커널 ~8회의 런치
 # 오버헤드가 지배해 192 env 실측 250ms/tick 이었다. 아래는 em_cupy 의 커널
 # 소스(MIT, Takahiro Miki)를 env 배치 차원이 있는 형태로 수정해 tick 당 커널
-# 몇 회로 줄인 것이다. 수식/셀 인덱싱/upper_bound 로직은 stock 과 동일하며,
-# 회귀 테스트(scripts/emcupy_check/regression_batched.py)가 동일 입력 → 동일
-# 출력을 검증한다. stock 과 맞추기 위한 재현 사항:
+# 몇 회로 줄인 것이다. 수식/셀 인덱싱/upper_bound 로직은 stock 과 동일하다.
+# stock 과 맞추기 위한 재현 사항:
 #  - error_counting 커널 포함 (newmap 의 점 카운트 레이어 3,4 를 add_points 의
 #    wall-sharpening/cleanup 분기가 읽는다 — 드리프트 보정이 꺼져 있어도 필요)
 #  - traversability CNN 스텁의 부작용(map layer3 내부=0) 재현 — 다음 tick 의
@@ -301,8 +298,7 @@ class ElevationMapBackend:
 import string  # noqa: E402
 
 
-def _batched_preamble(res, n, sensor_noise_factor, min_valid_distance, max_height_range,
-                      ra, rb, rc):
+def _batched_preamble(res, n, sensor_noise_factor, min_valid_distance, max_height_range, ra, rb, rc):
     """map_utils 의 배치판: get_map_idx 가 env 번호 b 를 받는다. width==height==n."""
     return string.Template(
         """
@@ -366,9 +362,16 @@ def _batched_preamble(res, n, sensor_noise_factor, min_valid_distance, max_heigh
             return (x1 * x2 + y1 * y2 + z1 * z2);
         }
         """
-    ).substitute(res=res, n=n, sensor_noise_factor=sensor_noise_factor,
-                 min_valid_distance=min_valid_distance, max_height_range=max_height_range,
-                 ra=ra, rb=rb, rc=rc)
+    ).substitute(
+        res=res,
+        n=n,
+        sensor_noise_factor=sensor_noise_factor,
+        min_valid_distance=min_valid_distance,
+        max_height_range=max_height_range,
+        ra=ra,
+        rb=rb,
+        rc=rc,
+    )
 
 
 class BatchedElevationMapBackend:
@@ -422,8 +425,13 @@ class BatchedElevationMapBackend:
         self._err_cnt = cp.zeros(B, dtype=cp.float32)
 
         pre = _batched_preamble(
-            p.resolution, n, p.sensor_noise_factor, float(min_valid_distance),
-            p.max_height_range, p.ramped_height_range_a, p.ramped_height_range_b,
+            p.resolution,
+            n,
+            p.sensor_noise_factor,
+            float(min_valid_distance),
+            p.max_height_range,
+            p.ramped_height_range_a,
+            p.ramped_height_range_b,
             p.ramped_height_range_c,
         )
 
@@ -528,7 +536,7 @@ class BatchedElevationMapBackend:
                 mahalanobis_thresh=p.mahalanobis_thresh,
                 outlier_variance=p.outlier_variance,
                 wall_num_thresh=p.wall_num_thresh,
-                ray_step=p.resolution / 2 ** 0.5,
+                ray_step=p.resolution / 2**0.5,
                 max_ray_length=float(max_ray_length),
                 cleanup_step=p.cleanup_step,
                 cleanup_cos_thresh=p.cleanup_cos_thresh,
@@ -721,16 +729,18 @@ class BatchedElevationMapBackend:
         sx, sy = shift[:, 0], shift[:, 1]
         ar = torch.arange(n, device=self.device)
         # roll: new[i] = old[(i - s) mod n]
-        ix = (ar.view(1, n) - sx.view(-1, 1)) % n            # (B,n)
+        ix = (ar.view(1, n) - sx.view(-1, 1)) % n  # (B,n)
         iy = (ar.view(1, n) - sy.view(-1, 1)) % n
         rolled = m.gather(2, ix.view(-1, 1, n, 1).expand(-1, 7, n, n))
         rolled = rolled.gather(3, iy.view(-1, 1, 1, n).expand(-1, 7, n, n))
         # pad_value: wrap 된 밴드 무효화 (전 레이어 0, variance 는 initial)
         vx = (ar.view(1, n) >= sx.clamp_min(0).view(-1, 1)) & (
-            ar.view(1, n) < (n + sy.new_zeros(1) + sx.clamp_max(0).view(-1, 1)))
+            ar.view(1, n) < (n + sy.new_zeros(1) + sx.clamp_max(0).view(-1, 1))
+        )
         vy = (ar.view(1, n) >= sy.clamp_min(0).view(-1, 1)) & (
-            ar.view(1, n) < (n + sx.new_zeros(1) + sy.clamp_max(0).view(-1, 1)))
-        keep = (vx.view(-1, 1, n, 1) & vy.view(-1, 1, 1, n))  # (B,1,n,n)
+            ar.view(1, n) < (n + sx.new_zeros(1) + sy.clamp_max(0).view(-1, 1))
+        )
+        keep = vx.view(-1, 1, n, 1) & vy.view(-1, 1, 1, n)  # (B,1,n,n)
         rolled = torch.where(keep, rolled, torch.zeros_like(rolled))
         pad_var = (~keep).squeeze(1)
         rolled[:, 1][pad_var] = self.initial_variance
@@ -771,12 +781,29 @@ class BatchedElevationMapBackend:
             self._err *= 0.0
             self._err_cnt *= 0.0
             self._error_counting(
-                self.maps, p_cp, self._zeros_b, self._zeros_b, R_cp, t_cp, id_cp,
-                self.newmap, self._err, self._err_cnt, size=n_tot,
+                self.maps,
+                p_cp,
+                self._zeros_b,
+                self._zeros_b,
+                R_cp,
+                t_cp,
+                id_cp,
+                self.newmap,
+                self._err,
+                self._err_cnt,
+                size=n_tot,
             )
             self._add_points(
-                self._zeros_b, self._zeros_b, R_cp, t_cp, self.norm, id_cp,
-                p_cp, self.maps, self.newmap, size=n_tot,
+                self._zeros_b,
+                self._zeros_b,
+                R_cp,
+                t_cp,
+                self.norm,
+                id_cp,
+                p_cp,
+                self.maps,
+                self.newmap,
+                size=n_tot,
             )
         self._average_map(self.newmap, self.maps, size=B * n * n)
 
@@ -804,6 +831,4 @@ class BatchedElevationMapBackend:
         return self.centers
 
     def sample(self, points_xy: torch.Tensor, base_z: torch.Tensor):
-        return sample_scan_heights(
-            self.layers(), self.centers, points_xy, base_z, self.resolution, self.cell_n
-        )
+        return sample_scan_heights(self.layers(), self.centers, points_xy, base_z, self.resolution, self.cell_n)

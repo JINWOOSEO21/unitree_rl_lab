@@ -83,3 +83,7 @@ reportMissingModuleSource = "none" # -> most common: prettytable in mdp managers
 reportGeneralTypeIssues = "none"       # -> raises 218 errors (usage of literal MISSING in dataclasses)
 reportOptionalMemberAccess = "warning" # -> raises 8 errors
 reportPrivateUsage = "warning"
+
+[tool.ruff]
+# vendored 사본은 원본과 바이트 단위로 같아야 한다 (sha256 고정). 포매터 제외.
+exclude = ["deploy/parkour/vendored"]
