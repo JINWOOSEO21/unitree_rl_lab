@@ -1,0 +1,3 @@
+[submodule "deploy/parkour/thirdparty/cyclonedds"]
+	path = deploy/parkour/thirdparty/cyclonedds
+	url = https://github.com/eclipse-cyclonedds/cyclonedds.git
