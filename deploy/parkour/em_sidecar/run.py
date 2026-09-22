@@ -1,8 +1,8 @@
 """EM 사이드카 실행 진입점.
 
-    python -m em_sidecar.run                      # 기본값 (domain 0, lo)
-    python -m em_sidecar.run --duration 30        # 30초만
-    python -m em_sidecar.run --device cpu         # cupy 없이 (느림, 진단용)
+    python -m em_sidecar                          # 기본값 (domain 0, lo)  (deploy/parkour 에서)
+    python deploy/parkour/em_sidecar --duration 30  # 경로로 직접 실행, 30초만
+    python -m em_sidecar --device cpu             # cupy 없이 (느림, 진단용)
 
 unitree_mujoco 시뮬레이터가 먼저 떠 있어야 한다 (config.yaml 에 enable_lidar: 1).
 """

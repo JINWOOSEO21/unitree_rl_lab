@@ -6,7 +6,7 @@
 
 기동 순서 (X 디스플레이 필요, 시뮬레이터 키 입력은 pty 로 넣는다)
   1. unitree_mujoco          — pty 포그라운드 (KeyboardJoystick 이 터미널을 읽는다)
-  2. em_sidecar.run --record — scandots + (mit) gyro bias 하트비트
+  2. python -m em_sidecar --record — scandots + (mit) gyro bias 하트비트
   3. 접힌(down) 자세 만들기  — rt/lowcmd 로 [0, 1.36, −2.65]×4 까지 접는다. 새 State_Go2Pose 는
      실기처럼 **접힌 자세에서 출발**한다고 보고 현재 관절각 → 기립 자세로 곧장 보간한다.
      시뮬레이터의 로봇은 home 자세에서 무제어로 떨어져 널브러져 있어, 그대로 세우면 뒤집힌다.
@@ -222,7 +222,7 @@ def main() -> int:
             a.python,
             "-u",
             "-m",
-            "em_sidecar.run",
+            "em_sidecar",
             "--odom",
             a.odom,
             "--record",
