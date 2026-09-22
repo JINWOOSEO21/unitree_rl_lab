@@ -146,6 +146,34 @@ private:
                      standdown_tolerance_, fastest, speed, tilt);
     }
 
+    // Policy 진입 거부 이유. 키보드('2')와 조종기(Start) 경로가 같이 쓴다.
+    void log_policy_rejection(const Go2PolicyReadiness& ready) const
+    {
+        if (!ready.stand_complete) {
+            size_t worst = 0;
+            float error = -1, q_worst = 0;
+            {
+                std::lock_guard<std::mutex> lock(lowstate->mutex_);
+                for (size_t i = 0; i < target_.size(); ++i) {
+                    const float e = std::abs(lowstate->msg_.motor_state()[i].q() - target_[i]);
+                    if (e > error) { error = e; worst = i; q_worst = lowstate->msg_.motor_state()[i].q(); }
+                }
+            }
+            spdlog::warn("Policy entry rejected: stand motion incomplete or joint error exceeds tolerance "
+                         "(motion_complete={}, worst SDK joint[{}] q={:.3f} target={:.3f} error={:.3f}/{:.3f} rad)",
+                         complete_.load(), worst, q_worst, target_[worst], error, stand_tolerance_);
+        }
+        else if (!ready.scan_fresh_and_valid)
+            spdlog::warn("Policy entry rejected: scandots are missing, stale, non-finite, or out of range");
+        else if (!ready.gyro_bias_valid) {
+            parkour::GyroBiasSample bias;
+            std::string reason = "gyro bias subscriber unavailable";
+            if (go2_gyro_bias) go2_gyro_bias->get(bias, &reason);
+            spdlog::warn("Policy entry rejected: {}", reason);
+        } else
+            spdlog::warn("Policy entry rejected: IMU orientation is invalid or not upright");
+    }
+
     Go2PolicyReadiness readiness() const
     {
         Go2PolicyReadiness result;
@@ -188,19 +216,8 @@ private:
                 if (policy_request) {
                     if (target == Go2RuntimeState::Passive &&
                         !(ready.stand_complete && ready.scan_fresh_and_valid && ready.upright && ready.gyro_bias_valid)) {
-                        if (go2_keyboard_control->consume_request(Go2StateRequest::Policy)) {
-                            if (!ready.stand_complete)
-                                spdlog::warn("Policy entry rejected: stand motion incomplete or joint error exceeds tolerance");
-                            else if (!ready.scan_fresh_and_valid)
-                                spdlog::warn("Policy entry rejected: scandots are missing, stale, non-finite, or out of range");
-                            else if (!ready.gyro_bias_valid) {
-                                parkour::GyroBiasSample bias;
-                                std::string reason = "gyro bias subscriber unavailable";
-                                if (go2_gyro_bias) go2_gyro_bias->get(bias, &reason);
-                                spdlog::warn("Policy entry rejected: {}", reason);
-                            } else
-                                spdlog::warn("Policy entry rejected: IMU orientation is invalid or not upright");
-                        }
+                        if (go2_keyboard_control->consume_request(Go2StateRequest::Policy))
+                            log_policy_rejection(ready);
                         return false;
                     }
                 }
@@ -218,9 +235,14 @@ private:
             auto joystick_policy = unitree::common::dsl::Compile(*ast);
             registered_checks.emplace_back(
                 [this, joystick_policy] {
+                    // Start 는 edge(on_pressed)라 매 tick 평가해야 누름을 놓치지 않는다. 조건이
+                    // 안 맞으면 조용히 버리지 않고 이유를 남긴다 (누름당 한 번).
+                    if (!joystick_policy(lowstate->joystick)) return false;
                     const auto ready = readiness();
-                    return ready.stand_complete && ready.scan_fresh_and_valid && ready.upright && ready.gyro_bias_valid &&
-                           joystick_policy(lowstate->joystick);
+                    if (ready.stand_complete && ready.scan_fresh_and_valid && ready.upright && ready.gyro_bias_valid)
+                        return true;
+                    log_policy_rejection(ready);
+                    return false;
                 },
                 FSMStringMap.right.at("Parkour"));
         }

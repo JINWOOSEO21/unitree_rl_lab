@@ -5,8 +5,7 @@ IsaacLab 의 `play.py --multicam --with_scandots` 를 MuJoCo 판으로 옮긴 �
 sim 시각 기준으로 관절각·자세(lowstate_raw, 500 Hz)와 tick 별 scandots(정책 입력 132)
 가 함께 있으므로 프레임 시각을 정확히 맞출 수 있다.
 
-    python eval/render_video.py em_ticks_vr3_1.npz --scene ramp --out videos/mujoco_ramp.mp4
-    python eval/render_video.py em_ticks_vs3_3.npz --scene stairs --out videos/mujoco_stairs.mp4
+    python deploy/parkour/eval/render_video.py em_ticks.npz --out videos/mujoco_ramp.mp4
 
 패널
 ----
@@ -49,25 +48,7 @@ from em_sidecar.sidecar import IMU_SITE_IN_BASE  # noqa: E402
 from em_sidecar.terrain import META, Terrain  # noqa: E402
 
 MJ_ROBOTS = Path.home() / "workspace/codes/unitree_mujoco/unitree_robots/go2"
-SCENES = {
-    # 씬 파일, terrain_meta 기준 스폰(월드 원점이 되는 meta 좌표), 월드 z 보정, terrain_meta
-    "ramp": ("scene_parkour.xml", None, 0.0, META),
-    "stairs": ("scene_parkour_stairs.xml", (-11.0, 2.0), -0.012, META),
-    # 램프 높이 3배(기울기 유지) 시험 지형 — terrain/make_tall_ramp.py
-    "ramp3x": (
-        "scene_parkour_ramp3x.xml",
-        None,
-        0.0,
-        META.with_name("terrain_meta_ramp3x.npz"),
-    ),
-    # 같은 높이(1.16 m)에 기울기 15° — make_tall_ramp.py --slope-deg 15 --height 1.16 --tag ramp15
-    "ramp15": (
-        "scene_parkour_ramp15.xml",
-        None,
-        0.0,
-        META.with_name("terrain_meta_ramp15.npz"),
-    ),
-}
+SCENE_FILE = "scene_parkour.xml"  # 씬은 하나 (terrain_meta.npz 로 구운 hfield, 스폰 = 월드 원점)
 # IsaacLab 관절 순서(hip×4, thigh×4, calf×4; 다리 FL FR RL RR) → MJCF qpos 순서(다리별 hip,thigh,calf)
 IL_TO_MJ = [4 * j + leg for leg in range(4) for j in range(3)]
 HEIGHT_OFFSET = 0.3  # 학습 scan 식의 오프셋
@@ -176,7 +157,6 @@ def fit_height(img, h):
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("record")
-    ap.add_argument("--scene", choices=list(SCENES), default="ramp")
     ap.add_argument("--out", required=True)
     ap.add_argument("--fps", type=int, default=30)
     ap.add_argument("--start", type=float, default=None, help="영상 시작 sim 시각 [s] (기본: 걷기 시작 1 s 전)")
@@ -187,7 +167,7 @@ def main() -> int:
     ap.add_argument("--vmax", type=float, default=0.8)
     a = ap.parse_args()
 
-    scene_file, spawn, zfix, meta_path = SCENES[a.scene]
+    scene_file, spawn, zfix, meta_path = SCENE_FILE, None, 0.0, META
     r = load_record(Path(a.record))
     t_raw, q_il, quat, base = raw_streams(r)
     t_em = r["stamp"].astype(np.float64)
@@ -259,7 +239,7 @@ def main() -> int:
         left = cv2.cvtColor(renderer.render(), cv2.COLOR_RGB2BGR)
         cv2.putText(
             left,
-            f"{a.scene}  odom={odom_name if leg_mode else 'GT'}  t={tf - t0:5.2f}s  "
+            f"ramp  odom={odom_name if leg_mode else 'GT'}  t={tf - t0:5.2f}s  "
             f"x={base[i, 0]:+.2f} z={base[i, 2]:.2f}",
             (10, 26),
             cv2.FONT_HERSHEY_SIMPLEX,

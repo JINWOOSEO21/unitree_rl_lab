@@ -1,8 +1,7 @@
 """MuJoCo 폐루프 주행 한 번을 띄우고 사이드카 기록(npz)을 남긴다 — render_video.py 의 입력.
 
-    python eval/mujoco_walk_record.py --odom mit --scene ramp   --out /tmp/em_mit_ramp.npz
-    python eval/mujoco_walk_record.py --odom mit --scene stairs --out /tmp/em_mit_stairs.npz
-    python eval/render_video.py /tmp/em_mit_ramp.npz --scene ramp --out videos/mujoco_ramp_mitodom.mp4
+    python deploy/parkour/eval/mujoco_walk_record.py --odom mit --out /tmp/em_mit_ramp.npz
+    python deploy/parkour/eval/render_video.py /tmp/em_mit_ramp.npz --out videos/mujoco_ramp_mitodom.mp4
 
 기동 순서 (X 디스플레이 필요, 시뮬레이터 키 입력은 pty 로 넣는다)
   1. unitree_mujoco          — pty 포그라운드 (KeyboardJoystick 이 터미널을 읽는다)
@@ -34,38 +33,17 @@ from test_keyboard_pty import drain, kill_tree, proc_state, spawn_sim_on_pty  # 
 
 SIM_DIR = CODES / "unitree_mujoco/simulate/build"
 CTRL_DIR = PARKOUR.parent / "robots/go2/build"
-SCENE_ARGS = {
-    "ramp": "",
-    "stairs": "-s scene_parkour_stairs.xml",
-    "ramp3x": "-s scene_parkour_ramp3x.xml",
-    "ramp15": "-s scene_parkour_ramp15.xml",
-}
-# 마지막 goal 에서 주행을 끝내는 장면 (IsaacLab 의 goal 도달 종료와 같은 뜻): 장면 → (meta, 지형 이름)
-SCENE_GOAL = {
-    "ramp3x": (
-        PARKOUR / "terrain/assets/terrain/terrain_meta_ramp3x.npz",
-        "parkour_trapezoid_ramp",
-    ),
-    "ramp15": (
-        PARKOUR / "terrain/assets/terrain/terrain_meta_ramp15.npz",
-        "parkour_trapezoid_ramp",
-    ),
-    "stairs": (
-        PARKOUR / "terrain/assets/terrain/terrain_meta.npz",
-        "parkour_trapezoid_stairs",
-    ),
-}
+# 마지막 goal 에서 주행을 끝낸다 (IsaacLab 의 goal 도달 종료와 같은 뜻). 씬은 scene_parkour.xml 하나다.
+GOAL_META = PARKOUR / "terrain/assets/terrain/terrain_meta.npz"
+GOAL_TERRAIN = "parkour_trapezoid_ramp"
 
 
-def final_goal_x(scene: str) -> float | None:
-    """마지막 goal 의 x (MuJoCo 월드 = IsaacLab 스폰 기준). 종료 지점이 없는 장면은 None."""
-    if scene not in SCENE_GOAL:
-        return None
+def final_goal_x() -> float:
+    """마지막 goal 의 x (MuJoCo 월드 = IsaacLab 스폰 기준)."""
     import numpy as np
 
-    path, name = SCENE_GOAL[scene]
-    m = np.load(path, allow_pickle=True)
-    col = int(np.where(m["terrain_names"][0, :, 0] == name)[0][0])
+    m = np.load(GOAL_META, allow_pickle=True)
+    col = int(np.where(m["terrain_names"][0, :, 0] == GOAL_TERRAIN)[0][0])
     return float(
         m["goals"][0, col, -1, 0]
         + m["terrain_origins"][0, col, 0]
@@ -167,7 +145,6 @@ def py_snippet(python: str, code: str, timeout: float) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--odom", choices=["mit", "sport", "leg"], default="mit")
-    ap.add_argument("--scene", choices=list(SCENE_ARGS), default="ramp")
     ap.add_argument("--out", required=True, help="사이드카 기록 npz")
     ap.add_argument("--duration", type=float, default=25.0, help="Policy 주행 시간 [s]")
     ap.add_argument(
@@ -183,6 +160,12 @@ def main() -> int:
         action="store_true",
         help="사이드카에 그대로 넘긴다 (무효 pose 에서 scandots 무효화 대신 tick 건너뜀)",
     )
+    ap.add_argument(
+        "--stand-wait",
+        type=float,
+        default=4.0,
+        help="'1' 뒤 '2' 까지 최소 대기 [s] (기립 동작 2 s + 정착)",
+    )
     ap.add_argument("--wait", type=int, default=180, help="첫 scandots 대기 한도 [s]")
     ap.add_argument("--display", default=os.environ.get("DISPLAY", ":1"))
     ap.add_argument(
@@ -196,7 +179,7 @@ def main() -> int:
     log_dir = Path(a.log_dir) if a.log_dir else out.parent
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    os.environ["SIM_ARGS"] = SCENE_ARGS[a.scene]
+    os.environ["SIM_ARGS"] = ""
     for attempt in range(3):  # 직전 실행 직후에는 시뮬레이터가 가끔 바로 죽는다
         master, sim, leader = spawn_sim_on_pty(True, SIM_DIR, a.display)
         time.sleep(4.0)
@@ -279,6 +262,7 @@ def main() -> int:
             print("go2_ctrl 또는 사이드카가 즉시 종료 — 로그 확인:", log_dir)
             return 1
         os.write(master, b"1")  # FixStand
+        t_stand = time.time()
         print("[run] 기립 — MIT 보정(10 s 정지)과 첫 scandots 를 기다린다", flush=True)
         t0 = time.time()
         w = py_snippet(
@@ -296,6 +280,12 @@ def main() -> int:
         )
         # 기립 보간 2 s + 정착 게이트가 끝나기 전의 '2' 는 거부된다 (sport/leg 는 scandots 가 바로 온다).
         time.sleep(max(1.0, 5.0 - (time.time() - t0)))
+        # 조종기 Start 는 눌린 순간 기립 완료·scandots·자세·gyro bias 가 모두 맞아야 받아들여지고,
+        # 시뮬레이터는 키를 1 s 만 유지한다. 기립 동작(2 s)이 끝나기 전에 누르면 조용히 버려진다.
+        remain = a.stand_wait - (time.time() - t_stand)
+        if remain > 0:
+            print(f"[run] 기립 완료 대기 {remain:.1f} s", flush=True)
+            time.sleep(remain)
         os.write(master, b"2")  # Policy (start)
         n_w = int(round(min(max((a.vx - 0.3) / 0.5, 0.0), 1.0) / 0.25))
         for _ in range(n_w):  # ly += 0.25 씩
@@ -303,7 +293,7 @@ def main() -> int:
             os.write(master, b"w")
         print(f"[run] 속도 명령 {0.3 + 0.125 * n_w:.3f} m/s ('w' x{n_w})", flush=True)
         time.sleep(1.0)
-        stop_x = final_goal_x(a.scene)
+        stop_x = final_goal_x()
         if stop_x is not None:
             print(
                 f"[run] 종료 지점: x ≥ {stop_x:.2f} m (마지막 goal) 또는 {a.duration:.0f} s",

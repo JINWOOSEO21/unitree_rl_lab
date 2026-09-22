@@ -57,9 +57,9 @@ MIT의 센서·좌표계·추정 방법은 [MIT odometry 안내](parkour/go2_bri
 `enx00e04c637ac7`은 로봇에 연결된 유선 인터페이스 이름으로 바꿉니다.
 
 ```bash
-cd ~/workspace/codes/unitree_rl_lab/deploy/robots/go2
+# unitree_rl_lab 저장소 루트에서
 mkdir -p ~/go2_logs
-env -u CYCLONEDDS_URI stdbuf -oL ./build/go2_ctrl \
+env -u CYCLONEDDS_URI stdbuf -oL deploy/robots/go2/build/go2_ctrl \
   --network enx00e04c637ac7 --keyboard --log 2>&1 \
   | tee -i ~/go2_logs/controller.log
 ```
@@ -74,6 +74,26 @@ Ctrl+C는 Stand → StandDown → 자세 확인 후 종료입니다.
 `tee -i`는 Ctrl+C 중에도 종료 로그를 받습니다. `--log`는 별도로
 `robots/go2/log/log.txt`에 컨트롤러 로그를 남깁니다.
 
+## MuJoCo sim2sim
+
+실기의 센서 브리지 자리를 `em_sidecar`가 맡고, 시뮬레이터가 로봇 자리를 맡습니다.
+모든 명령은 각 저장소 루트에서 실행합니다. 터미널 세 개를 씁니다.
+
+```bash
+# 1. 시뮬레이터 (unitree_mujoco 루트, X 디스플레이 필요). 씬은 scene_parkour.xml 하나.
+simulate/build/unitree_mujoco
+
+# 2. 높이맵 사이드카 (unitree_rl_lab 루트)
+python deploy/parkour/em_sidecar --odom mit          # sport/leg 면 --sim-gyro-bias 추가
+
+# 3. 컨트롤러 (unitree_rl_lab 루트). 키 1 기립 → 정지 10 s (gyro 보정) → 2 정책 → w 속도 ↑
+deploy/robots/go2/build/go2_ctrl --sim --network lo
+```
+
+시뮬레이터는 시작·Backspace 리셋 때 `go2.xml`의 `down` 키프레임(실기의 접힌 자세)으로
+로봇을 놓습니다. 세 단계를 자동으로 수행하고 기록·영상까지 남기는 것이
+`deploy/parkour/eval/mujoco_walk_record.py`입니다.
+
 ## 유지되는 파일
 
 - `parkour/contract/`: 정책 ONNX, 관측 계약, 기구학·scan 격자.
@@ -81,7 +101,7 @@ Ctrl+C는 Stand → StandDown → 자세 확인 후 종료입니다.
   odometry, elevation map 연결 및 기록·시각화 도구.
 - `parkour/notebook_setup.sh`: 노트북(controller) 측 의존성·SDK·빌드 준비.
 - `parkour/eval/`: 주행 기록·오도메트리 분석·영상 렌더 (런타임이 import 하지 않음).
-- `parkour/terrain/`: IsaacLab 지형을 MuJoCo hfield/scene 으로 변환하는 자산 생성.
+- `parkour/terrain/`: `terrain_meta.npz`(램프 높이 1.16 m, 29°)를 MuJoCo hfield/scene 으로 변환.
 - 저장소의 `source/`와 `scripts/`: 학습.
 - `thirdparty/`, `../doc/licenses/`, `../LICENCE`: 런타임 의존성과 라이선스.
 
