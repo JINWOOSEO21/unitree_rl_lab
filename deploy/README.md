@@ -44,7 +44,7 @@ Jetson에서 먼저 센서 브리지를 실행합니다.
 ```bash
 source ~/walking/env.sh
 python -m go2_bridge \
-  --interface eth0 --odom mit --emcupy-root "$GO2_EMCUPY" \
+  --network eth0 --odom mit --emcupy-root "$GO2_EMCUPY" \
   --publish-scandots --summary-only
 ```
 

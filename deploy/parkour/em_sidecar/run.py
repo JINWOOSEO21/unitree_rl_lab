@@ -25,7 +25,7 @@ def main() -> int:
                    help="elevation_mapping_cupy 클론 위치 (Isaaclab_Parkour 서브모듈)")
     p.add_argument("--device", default="cuda:0")
     p.add_argument("--domain", type=int, default=0)
-    p.add_argument("--iface", default="lo")
+    p.add_argument("--network", default="lo", help="DDS network interface name (lo for MuJoCo)")
     p.add_argument("--topic", default="rt/parkour/scandots")
     p.add_argument("--duration", type=float, default=None, help="초 (미지정이면 무한)")
     p.add_argument(
@@ -127,7 +127,7 @@ def main() -> int:
         emcupy_root=Path(a.emcupy_root),
         device=a.device,
         domain_id=a.domain,
-        interface=a.iface,
+        interface=a.network,
         publish_topic=a.topic,
         record_path=Path(a.record) if a.record else None,
         record_map=a.record_map,

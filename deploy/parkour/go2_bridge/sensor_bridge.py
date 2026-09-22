@@ -388,7 +388,7 @@ def run(interface, domain, duration, emcupy_root, emit, odom_source='leg', leg_c
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--interface')
+    parser.add_argument('--network', help='DDS network interface name (e.g. eth0)')
     parser.add_argument('--domain', type=int, default=0)
     parser.add_argument('--duration', type=float, default=0, help='Seconds; default 0 runs until Ctrl+C')
     parser.add_argument('--emcupy-root', type=Path,
@@ -409,7 +409,7 @@ def main():
         dependencies(args.odom)
         print('DDS types and torch/cupy import OK; no DDS participant created')
         return
-    if not args.interface or not 0 <= args.duration <= 300 or not 0 <= args.domain <= 232:
+    if not args.network or not 0 <= args.duration <= 300 or not 0 <= args.domain <= 232:
         parser.error('interface required; duration in [0,300], domain in [0,232]')
     output = sys.stdout
     write_lock = threading.Lock()
@@ -439,7 +439,7 @@ def main():
             output.flush()
     with redirect_stdout(sys.stderr):
         try:
-            code = run(args.interface, args.domain, args.duration, args.emcupy_root, emit,
+            code = run(args.network, args.domain, args.duration, args.emcupy_root, emit,
                        args.odom, args.leg_contact_threshold, args.publish_scandots,
                        args.scandots_topic, leg_odom_hz=args.leg_odom_hz, mit_odom_hz=args.mit_odom_hz)
         except KeyboardInterrupt:

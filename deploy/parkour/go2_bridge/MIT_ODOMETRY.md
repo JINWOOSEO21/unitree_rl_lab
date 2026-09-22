@@ -10,7 +10,7 @@ https://github.com/mit-biomimetics/Cheetah-Software/blob/master/common/src/Contr
 ```bash
 source ~/walking/env.sh
 python -m go2_bridge \
-  --interface eth0 --odom mit --emcupy-root "$GO2_EMCUPY" --summary-only
+  --network eth0 --odom mit --emcupy-root "$GO2_EMCUPY" --summary-only
 ```
 
 Stand still with all four feet loaded for the initial 10-second body gyro
