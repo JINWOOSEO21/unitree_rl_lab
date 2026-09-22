@@ -46,6 +46,3 @@ add_library(${PROJECT_NAME}_lib ${ADD_SRC_LIST})
 link_libraries(${PROJECT_NAME}_lib)
 
 add_executable(go2_ctrl main.cpp)
-
-# Optional recording utility for live sensor and controller telemetry.
-add_executable(go2_walk_record tools/walk_record.cpp)

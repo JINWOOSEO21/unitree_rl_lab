@@ -22,7 +22,7 @@ bash deploy/parkour/notebook_setup.sh build
 이미 `~/workspace/codes/unitree_sdk2`가 있다면 `build`만 실행합니다.
 SDK 원본의 헤더와 포함된 라이브러리를 직접 사용하므로 별도 설치는 필요하지 않습니다.
 다른 SDK 경로는 스크립트의 `SDK_ROOT` 또는 CMake의 `UNITREE_SDK_ROOT`로 지정합니다. 빌드 결과는
-`robots/go2/build/go2_ctrl`과 기록용 `go2_walk_record`입니다.
+`robots/go2/build/go2_ctrl`입니다.
 빌드 스크립트는 ROS의 DDS 라이브러리와 충돌하지 않도록 SDK 라이브러리 경로를 고정합니다.
 
 ## Jetson 환경
