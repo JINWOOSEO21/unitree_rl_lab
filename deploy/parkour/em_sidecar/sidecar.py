@@ -36,6 +36,11 @@ pose 출처
                        보장이 없다.
              "leg"   — 다리 운동학 + IMU 로 직접 적분 (leg_odometry.py). lowstate
                        만 있으면 된다. 실기 기본 후보.
+             "mit"   — MIT Cheetah 3 식 IMU+다리 칼만 융합 (mit_odometry.py). 실기 브리지
+                       (python -m go2_bridge --odom mit) 와 **같은 어댑터**
+                       go2_bridge.mit_pose.MitPose 를 그대로 태운다: 정지 10 s 자이로
+                       보정, 추정 주기 제한, gap 예산, pose_valid 게이트까지 같다.
+                       지도 자세도 브리지처럼 추정기의 자세(mapping_pose)를 쓴다.
   자세   : rt/lowstate.imu_state.quaternion
 sportmodestate 에도 imu_state 필드가 있지만 unitree_mujoco 브리지는 position/velocity
 만 채운다. 자세는 lowstate 쪽이 실기·시뮬레이터 양쪽에서 항상 차 있다.
@@ -117,7 +122,7 @@ class SidecarCfg:
     odom_offset_in_base: np.ndarray = field(
         default_factory=lambda: IMU_SITE_IN_BASE.copy()
     )
-    # base 위치 출처 — "sport" | "leg" (모듈 docstring 'pose 출처' 참조).
+    # base 위치 출처 — "sport" | "leg" | "mit" (모듈 docstring 'pose 출처' 참조).
     # leg 는 base **원점**을 직접 추정하므로 odom_offset_in_base 를 적용하지 않고,
     # sportmodestate 가 오면 기록용 GT 로만 쓴다.
     odom_source: str = "sport"
@@ -130,6 +135,20 @@ class SidecarCfg:
     # 놓아 드리프트를 바로 비교하기 위해서다. 그 토픽이 없으면(실기 저수준 제어) 0 에서
     # 시작하며, 지도는 상대 좌표라 문제없다.
     leg_seed_from_sport: bool = True
+    # mit 추정 주기 [Hz] — 브리지의 --mit-odom-hz 기본값과 같다.
+    mit_odom_hz: float = 75.0
+    # leg 추정 주기 [Hz] — 브리지의 --leg-odom-hz 기본값과 같다. 0 이면 lowstate 표본마다.
+    # 표본마다(시뮬레이터 1 kHz) 돌리면 운동학 1.5 ms 가 GIL 을 독점해 점군 tick 이 절반으로
+    # 떨어졌다 (10 → 4~6 Hz, 정책이 0.2~0.3 s 낡은 지형을 봄). 2026-09-22 실측.
+    leg_odom_hz: float = 100.0
+    # mit pose 가 무효(지지 발 없이 0.15 s 초과 등)일 때 브리지처럼 빈 HeightMap 으로 이전
+    # scandots 를 무효화한다 — go2_ctrl 은 그걸 받으면 **즉시** Passive 로 간다. False 면
+    # 그 tick 만 건너뛴다 (go2_ctrl 의 0.5 s scandots timeout 은 그대로 지킨다). 실험용.
+    mit_invalidate_on_bad_pose: bool = True
+    # sport/leg 모드에서 "보정 완료, bias 0" gyro bias 하트비트를 낸다. go2_ctrl 은 그 하트비트가
+    # 있어야 Policy 에 들어가는데 실기에서는 브리지가 낸다. 시뮬레이터 IMU 는 bias 가 없다.
+    # **시뮬레이터 전용** — 실기에서 켜면 보정 없이 Policy 게이트를 여는 셈이다.
+    sim_gyro_bias: bool = False
     # tick 마다 (시각, base pose, scan, valid) 를 모아 npz 로 남긴다. 정지 상태
     # 게이트만으로는 **주행 중** 지도가 어긋나는지 알 수 없다 — 정책이 헛것을 보고
     # 반응하는지 판정하려면 자세와 함께 기록해야 한다.
@@ -152,10 +171,21 @@ class _Latest:
     lock: threading.Lock = field(default_factory=threading.Lock)
     q_sdk: np.ndarray | None = None
     quat: np.ndarray | None = None
-    pos: np.ndarray | None = None        # EM 이 쓸 위치 (sport 원시값 또는 leg 추정)
-    pos_sport: np.ndarray | None = None  # sportmodestate 원시값 (leg 모드에서 GT 기록용)
-    pos_est: np.ndarray | None = None    # leg 추정 (leg / shadow 모드, 기록용)
-    sport_stamp: float = float("nan")    # sportmodestate.stamp (브리지: sim 시각) — 정렬용
+    pos: np.ndarray | None = None  # EM 이 쓸 위치 (sport 원시값 또는 leg 추정)
+    pos_sport: np.ndarray | None = (
+        None  # sportmodestate 원시값 (leg 모드에서 GT 기록용)
+    )
+    pos_est: np.ndarray | None = None  # leg 추정 (leg / shadow 모드, 기록용)
+    quat_map: np.ndarray | None = (
+        None  # mit: 추정기 자세 (브리지의 mapping_pose.orientation)
+    )
+    pose_valid: bool = True  # mit: 보정 완료 + 지지 발 있음 (브리지의 pose_valid)
+    map_reset: bool = False  # mit: gap/비행 뒤 지도 재구축 요청 (리더 → 처리 스레드)
+    low_tick: int = 0  # 마지막 lowstate.tick — gyro bias 하트비트용
+    low_wall: float = 0.0  # 그 수신 벽시계
+    sport_stamp: float = float(
+        "nan"
+    )  # sportmodestate.stamp (브리지: sim 시각) — 정렬용
     n_low: int = 0
     n_sport: int = 0
 
@@ -169,6 +199,9 @@ class EmSidecar:
         self.scan_xy = self.kin.scan_offsets_xy  # (132,2) base 프레임 (yaw 정렬)
         self.num_points = self.scan_xy.shape[0]
         self.il_to_sdk = _load_sdk_to_il(cfg.contract_dir / "deploy.yaml")
+        self.il_foot_to_sdk = _load_index(
+            cfg.contract_dir / "deploy.yaml", "il_foot_to_sdk"
+        )
 
         self.R_mount = quat_to_mat(MOUNT_QUAT)
         self.latest = _Latest()
@@ -198,16 +231,49 @@ class EmSidecar:
                       f"{'고정 %+.3f' % nc.odom_scale_bias_fixed if nc.odom_scale_bias_fixed is not None else '±%.3f' % nc.odom_scale_bias_max}",
                       flush=True)
 
-        if cfg.odom_source not in ("sport", "leg"):
-            raise ValueError(f"odom_source 는 'sport' 또는 'leg': {cfg.odom_source!r}")
+        if cfg.odom_source not in ("sport", "leg", "mit"):
+            raise ValueError(
+                f"odom_source 는 'sport' | 'leg' | 'mit': {cfg.odom_source!r}"
+            )
         self._use_leg = cfg.odom_source == "leg"
+        self._use_mit = cfg.odom_source == "mit"
+        # leg·mit 는 base 원점을 직접 추정한다 → odom_offset_in_base 를 적용하지 않는다.
+        self._own_pos = self._use_leg or self._use_mit
+        self._mit = None
+        self._mit_offset: np.ndarray | None = None  # mit 원점(0) → GT 프레임 평행이동
+        self._mit_dbg: dict = {}
+        self._bias_out = None
+        if self._use_mit:
+            if cfg.leg_shadow:
+                raise ValueError("mit 와 leg_shadow 는 함께 쓰지 않는다")
+            from go2_bridge.mit_pose import MitPose
+
+            thr = cfg.leg_odom.contact_force_thr if cfg.leg_odom is not None else 20.0
+            self._mit = MitPose(
+                contract_dir=cfg.contract_dir,
+                contact_threshold=thr,
+                rate_hz=cfg.mit_odom_hz,
+            )
+            self.il_foot_to_sdk = _load_index(
+                cfg.contract_dir / "deploy.yaml", "il_foot_to_sdk"
+            )
+            if cfg.verbose:
+                print(
+                    f"[em] MIT odometry 사용 (접촉 임계 {thr} N, {cfg.mit_odom_hz:.0f} Hz) — "
+                    f"네 발에 하중이 실린 채 10 s 정지해야 보정이 끝나고 scandots 가 나온다",
+                    flush=True,
+                )
         self._odom = None
         if self._use_leg or cfg.leg_shadow:
             from .leg_odometry import LegOdomCfg, LegOdometry
             self._odom = LegOdometry(self.kin, cfg.leg_odom or LegOdomCfg())
             self.il_foot_to_sdk = _load_index(cfg.contract_dir / "deploy.yaml", "il_foot_to_sdk")
             self._odom_seeded = not cfg.leg_seed_from_sport
-            self._odom_clock: str | None = None  # "tick" | "wall", 첫 lowstate 에서 정한다
+            self._odom_clock: str | None = (
+                None  # "tick" | "wall", 첫 lowstate 에서 정한다
+            )
+            self._odom_last_t: float | None = None
+            self._odom_min_dt = 0.0 if cfg.leg_odom_hz <= 0 else 1.0 / cfg.leg_odom_hz
             if cfg.verbose:
                 c = self._odom.cfg
                 print(f"[em] leg odometry {'사용' if self._use_leg else '그림자(기록만)'} "
@@ -218,6 +284,8 @@ class EmSidecar:
         self._torch = None
         self._pub = None
         self._pub_diag = None
+        self._scan_active = False
+        self.n_bad_pose_ticks = 0
 
     # -- 백엔드 --------------------------------------------------------------
     def _ensure_backend(self):
@@ -261,35 +329,154 @@ class EmSidecar:
         q = np.array([msg.motor_state[i].q for i in range(12)], dtype=np.float64)
         quat = np.array(list(msg.imu_state.quaternion), dtype=np.float64)
         pos = None
+        if self._mit is not None:
+            self._on_lowstate_mit(msg, q, quat)
+            return
+        # 원시 입력 스트림 — 모든 모드, 모든 표본 (tick, q_il 12, quat 4, gyro 3, ff_il 4, sport 원시
+        # 위치 3, sport stamp). 영상 렌더(관절각·자세)와 오프라인 재생용. sport 위치는 다른 스레드로
+        # 오므로 stamp 로 다시 정렬해야 한다.
+        if self.cfg.record_path is not None:
+            ps = self.latest.pos_sport
+            self._raw_dbg.append(
+                (
+                    int(msg.tick) * 1e-3,
+                    *q[self.il_to_sdk],
+                    *quat,
+                    *list(msg.imu_state.gyroscope),
+                    *np.array(list(msg.foot_force), dtype=np.float64)[
+                        self.il_foot_to_sdk
+                    ],
+                    *(np.full(3, np.nan) if ps is None else ps),
+                    self.latest.sport_stamp,
+                )
+            )
         if self._odom is not None:
             # 시각: lowstate.tick [ms] (브리지는 sim 시각, 실기는 MCU 시각). 0 이면 벽시계.
             if self._odom_clock is None:
                 self._odom_clock = "tick" if int(msg.tick) > 0 else "wall"
             t = int(msg.tick) * 1e-3 if self._odom_clock == "tick" else time.monotonic()
-            gyro = np.array(list(msg.imu_state.gyroscope), dtype=np.float64)
-            acc = np.array(list(msg.imu_state.accelerometer), dtype=np.float64)
-            ff_il = np.array(list(msg.foot_force), dtype=np.float64)[self.il_foot_to_sdk]
-            if self._odom_seeded:
-                pos = self._odom.step(t, q[self.il_to_sdk], quat, gyro, ff_il, acc).copy()
-                if self.cfg.record_path is not None:
-                    o = self._odom
-                    self._odom_dbg.append((t, o.last_dt, o.last_n_both, o.last_branch,
-                                           *o.vel, float(np.linalg.norm(acc)), *ff_il, *pos))
-                    # 원시 입력 스트림 — 오프라인 재생용 (tick, q_il 12, quat 4, gyro 3,
-                    # ff_il 4, sport 원시 위치 3, sport stamp). 라이브 반복 없이 추정기를
-                    # 결정론적으로 다시 돌려 볼 수 있다. sport 위치는 다른 스레드로 오므로
-                    # stamp 로 다시 정렬해야 한다.
-                    ps = self.latest.pos_sport
-                    self._raw_dbg.append((t, *q[self.il_to_sdk], *quat, *gyro, *ff_il,
-                                          *(np.full(3, np.nan) if ps is None else ps),
-                                          self.latest.sport_stamp))
+            # 추정 주기 제한 (leg_odom_hz) — 건너뛴 표본도 아래에서 관절각·자세는 최신으로 갱신한다.
+            if (
+                self._odom_last_t is None
+                or t - self._odom_last_t >= self._odom_min_dt - 1e-9
+            ):
+                self._odom_last_t = t
+                gyro = np.array(list(msg.imu_state.gyroscope), dtype=np.float64)
+                acc = np.array(list(msg.imu_state.accelerometer), dtype=np.float64)
+                ff_il = np.array(list(msg.foot_force), dtype=np.float64)[
+                    self.il_foot_to_sdk
+                ]
+                if self._odom_seeded:
+                    pos = self._odom.step(
+                        t, q[self.il_to_sdk], quat, gyro, ff_il, acc
+                    ).copy()
+                    if self.cfg.record_path is not None:
+                        o = self._odom
+                        self._odom_dbg.append(
+                            (
+                                t,
+                                o.last_dt,
+                                o.last_n_both,
+                                o.last_branch,
+                                *o.vel,
+                                float(np.linalg.norm(acc)),
+                                *ff_il,
+                                *pos,
+                            )
+                        )
         with self.latest.lock:
             self.latest.q_sdk = q
             self.latest.quat = quat
+            self.latest.low_tick = int(msg.tick)
+            self.latest.low_wall = time.monotonic()
             if pos is not None:
                 self.latest.pos_est = pos
                 if self._use_leg:
                     self.latest.pos = pos
+            self.latest.n_low += 1
+
+    def _on_lowstate_mit(self, msg, q: np.ndarray, quat: np.ndarray) -> None:
+        """브리지의 low_callback 과 같은 경로: low_row → MitPose.update → mapping_pose."""
+        gyro = list(msg.imu_state.gyroscope)
+        acc = list(msg.imu_state.accelerometer)
+        low = {
+            "imu_state": {
+                "quaternion": quat.tolist(),
+                "gyroscope": gyro,
+                "accelerometer": acc,
+            },
+            "motor_state": [{"q": m.q, "dq": m.dq} for m in msg.motor_state],
+            "foot_force": list(msg.foot_force),
+        }
+        row = self._mit.update(low, msg.tick)
+        t = int(msg.tick) * 1e-3
+        ff_il = np.array(low["foot_force"], dtype=np.float64)[self.il_foot_to_sdk]
+        self._mit_dbg = {"ff": ff_il, "gyro": float(np.max(np.abs(gyro)))}
+        pos = quat_map = None
+        valid = reset = False
+        if row is not None:
+            mp = row["mapping_pose"]
+            p = np.array([mp["position"][k] for k in "xyz"])
+            quat_map = np.array([mp["orientation"][k] for k in "wxyz"])
+            valid, reset = bool(row["pose_valid"]), bool(row["map_reset_required"])
+            if valid and self._mit_offset is None:
+                # 추정기는 0 에서 시작한다. sim2sim 에서는 GT 와 같은 프레임에 놓아 바로
+                # 비교한다 (leg 의 seed 와 같은 뜻). 자세는 IMU 쿼터니언으로 시작하므로
+                # 회전은 필요 없다. sportmodestate 가 없으면(실기) 0 그대로.
+                ps = self.latest.pos_sport
+                seed = self.cfg.leg_seed_from_sport and ps is not None
+                self._mit_offset = (
+                    ps - quat_to_mat(quat) @ self.cfg.odom_offset_in_base - p
+                    if seed
+                    else np.zeros(3)
+                )
+                if self.cfg.verbose:
+                    print(
+                        f"[em] MIT 자이로 보정 완료 (bias {np.round(self._mit.gyro_bias, 5)}) — "
+                        f"시작점 {self._mit_offset.round(3)}",
+                        flush=True,
+                    )
+            if self._mit_offset is not None:
+                pos = p + self._mit_offset
+        if self.cfg.record_path is not None:
+            if row is not None and pos is not None:
+                e = self._mit.estimator
+                self._odom_dbg.append(
+                    (
+                        t,
+                        float("nan"),
+                        e.last_n_both,
+                        e.last_branch,
+                        *e.x[3:6],
+                        float(np.linalg.norm(acc)),
+                        *ff_il,
+                        *pos,
+                    )
+                )
+            # 원시 스트림은 추정 주기와 무관하게 **모든** 표본을 남긴다 (영상의 관절각용).
+            ps = self.latest.pos_sport
+            self._raw_dbg.append(
+                (
+                    t,
+                    *q[self.il_to_sdk],
+                    *quat,
+                    *gyro,
+                    *ff_il,
+                    *(np.full(3, np.nan) if ps is None else ps),
+                    self.latest.sport_stamp,
+                )
+            )
+        with self.latest.lock:
+            self.latest.q_sdk = q
+            self.latest.quat = quat
+            self.latest.low_tick = int(msg.tick)
+            self.latest.low_wall = time.monotonic()
+            if row is not None:
+                self.latest.pose_valid = valid and pos is not None
+                self.latest.map_reset = self.latest.map_reset or reset
+                if pos is not None:
+                    self.latest.pos = self.latest.pos_est = pos
+                    self.latest.quat_map = quat_map
             self.latest.n_low += 1
 
     def on_sport(self, msg) -> None:
@@ -298,7 +485,7 @@ class EmSidecar:
             self.latest.pos_sport = pos
             self.latest.sport_stamp = float(msg.stamp.sec) + float(msg.stamp.nanosec) * 1e-9
             self.latest.n_sport += 1
-            if not self._use_leg:
+            if not self._own_pos:
                 self.latest.pos = pos
             if self._odom is None:
                 return
@@ -315,6 +502,27 @@ class EmSidecar:
         with self.latest.lock:
             q_sdk, quat, pos = self.latest.q_sdk, self.latest.quat, self.latest.pos
             pos_sport, pos_est = self.latest.pos_sport, self.latest.pos_est
+            quat_map, pose_valid = self.latest.quat_map, self.latest.pose_valid
+            map_reset, self.latest.map_reset = self.latest.map_reset, False
+        if map_reset and self._backend is not None:
+            # 브리지와 같다: 적분하지 못한 구간만큼 지도가 어긋났으므로 버리고 다시 채운다.
+            self._backend.clear([0])
+            if self.cfg.verbose:
+                print("[em] MIT: gap/비행 뒤 지도 초기화", flush=True)
+        if self._use_mit and not (
+            pose_valid and pos is not None and quat_map is not None
+        ):
+            # 브리지와 같다: 믿을 pose 가 없으면 scan 을 막고 이전 출력을 무효화한다.
+            if self.cfg.mit_invalidate_on_bad_pose:
+                self._invalidate()
+            elif self._scan_active:
+                self.n_bad_pose_ticks += 1
+                if self.cfg.verbose:
+                    print(
+                        f"[em] MIT: 믿을 pose 없음 — tick 건너뜀 (누적 {self.n_bad_pose_ticks})",
+                        flush=True,
+                    )
+            return
         if q_sdk is None or quat is None or pos is None:
             return  # 아직 상태가 안 왔다 — 이 프레임은 버린다
         try:
@@ -325,10 +533,16 @@ class EmSidecar:
             return
         if pts.size == 0:
             return
-        self.tick(pts, q_sdk, quat, pos, float(msg.header.stamp.sec)
-                  + float(msg.header.stamp.nanosec) * 1e-9,
-                  gt_pos=pos_sport if self._odom is not None else None,
-                  est_pos=pos_est)
+        self.tick(
+            pts,
+            q_sdk,
+            quat_map if self._use_mit else quat,
+            pos,
+            float(msg.header.stamp.sec) + float(msg.header.stamp.nanosec) * 1e-9,
+            gt_pos=pos_sport,  # sport 모드에서는 지도 위치와 같다 (기록 규약 통일)
+            est_pos=pos_est,
+            gt_quat=quat,
+        )
 
     # -- 본 처리 -------------------------------------------------------------
     def tick(
@@ -340,11 +554,13 @@ class EmSidecar:
         stamp: float = 0.0,
         gt_pos: np.ndarray | None = None,
         est_pos: np.ndarray | None = None,
+        gt_quat: np.ndarray | None = None,
     ) -> np.ndarray:
         """점군 한 프레임 → scandots 132. 반환값은 h_obs (발행과 별개로 쓸 수 있다).
 
         gt_pos : leg/그림자 모드에서 sportmodestate 원시 위치 (기록용 GT). 지도에는 안 쓴다.
         est_pos: leg 추정 base 원점 (기록용). leg 모드에서는 base_pos 와 같다.
+        gt_quat: lowstate IMU 자세 (기록용). mit 모드에서는 base_quat 가 추정기 자세라 다르다.
         """
         self._ensure_backend()
         torch = self._torch
@@ -354,9 +570,12 @@ class EmSidecar:
         R_base = quat_to_mat(base_quat)
         # sportmodestate 가 준 위치는 base 원점이 아니다 (IMU_SITE_IN_BASE 주석 참조) —
         # 되돌린다. leg odometry 는 base 원점을 직접 추정하므로 그대로 쓴다.
-        if not self._use_leg:
+        if not self._own_pos:
             base_pos = base_pos - R_base @ self.cfg.odom_offset_in_base
-        gt_base = None if gt_pos is None else gt_pos - R_base @ self.cfg.odom_offset_in_base
+        R_gt = R_base if gt_quat is None else quat_to_mat(gt_quat)
+        gt_base = (
+            None if gt_pos is None else gt_pos - R_gt @ self.cfg.odom_offset_in_base
+        )
         self._est_for_record = est_pos
 
         # 학습과 같은 EM 입력 노이즈 (실험용, train_noise.py 참조).
@@ -437,10 +656,20 @@ class EmSidecar:
             # 대조할 때 이 값을 그대로 써야 한다 (raw sportmodestate 를 쓰면 4.2 cm
             # 틀린다 — 예전에 그 실수로 "지도 표류" 라는 잘못된 결론을 냈다).
             est = self._est_for_record
-            self._rec.append((float(stamp), base_pos.copy(), base_quat.copy(),
-                              self.h_obs.copy(), self.valid_frac.copy(),
-                              np.full(3, np.nan) if gt_base is None else gt_base.copy(),
-                              np.full(3, np.nan) if est is None else np.asarray(est, float).copy()))
+            self._rec.append(
+                (
+                    float(stamp),
+                    base_pos.copy(),
+                    base_quat.copy(),
+                    self.h_obs.copy(),
+                    self.valid_frac.copy(),
+                    np.full(3, np.nan) if gt_base is None else gt_base.copy(),
+                    np.full(3, np.nan)
+                    if est is None
+                    else np.asarray(est, float).copy(),
+                    (base_quat if gt_quat is None else gt_quat).copy(),
+                )
+            )
             if self.cfg.record_map:
                 # EM 전체 지도 (영상·진단용). 레이어 규약은 vendored 백엔드 참조:
                 # [0] center z 상대 높이, [2] 직접 관측 여부, [5] 상한값, [6] 상한 여부.
@@ -471,7 +700,11 @@ class EmSidecar:
             gt_pos=np.stack([r[5] for r in rec]).astype(np.float32),
             # leg 추정 (leg / 그림자 모드). 그 외 NaN.
             est_pos=np.stack([r[6] for r in rec]).astype(np.float32),
-            odom_source=np.array(self.cfg.odom_source + ("+shadow" if self.cfg.leg_shadow else "")),
+            # lowstate IMU 자세. mit 모드에서만 base_quat(추정기 자세)와 다르다.
+            gt_quat=np.stack([r[7] for r in rec]).astype(np.float32),
+            odom_source=np.array(
+                self.cfg.odom_source + ("+shadow" if self.cfg.leg_shadow else "")
+            ),
             odom_dbg=np.array(list(self._odom_dbg), dtype=np.float64).reshape(-1, 15),
             lowstate_raw=np.array(list(self._raw_dbg), dtype=np.float64).reshape(-1, 28),
             **self._map_arrays(len(rec)),
@@ -510,8 +743,64 @@ class EmSidecar:
             )
 
         self._pub.Write(make(self.h_obs))
+        self._scan_active = True
         if self._pub_diag is not None:
             self._pub_diag.Write(make(self.valid_frac))
+
+    def _invalidate(self) -> None:
+        """빈 HeightMap 으로 이전 scandots 를 무효화한다 (브리지 ScandotsOutput.invalidate)."""
+        if self._pub is None or not self._scan_active:
+            return
+        from unitree_sdk2py.idl.unitree_go.msg.dds_ import HeightMap_
+
+        self._pub.Write(
+            HeightMap_(
+                stamp=0.0,
+                frame_id="base_yaw",
+                resolution=0.15,
+                width=0,
+                height=0,
+                origin=[0.0, 0.0],
+                data=[],
+            )
+        )
+        self._scan_active = False
+        if self.cfg.verbose:
+            print("[em] MIT: 믿을 pose 없음 — scandots 무효화", flush=True)
+
+    def _warmup(self) -> None:
+        """구독 전에 cupy JIT 를 치른다 (브리지 BaseMapper.warmup 과 같은 이유).
+
+        첫 update 의 커널 컴파일이 GIL 을 오래 잡으면 lowstate 리더가 굶어 MitPose 가
+        gap 으로 센다. sport/leg 는 gap 을 세지 않으므로 mit 에서만 한다.
+        """
+        self._ensure_backend()
+        rng = np.random.default_rng(0)
+        xy = rng.uniform(-1.5, 1.5, size=(4096, 2))
+        pts_base = np.column_stack([xy, np.full(len(xy), -0.30)])
+        pts = (pts_base - MOUNT_POS) @ self.R_mount  # base → 센서 프레임
+        pub, rec = self._pub, self.cfg.record_path
+        self._pub, self.cfg.record_path = None, None
+        t0 = time.perf_counter()
+        try:
+            self.tick(
+                pts,
+                np.zeros(12)[self.il_to_sdk],
+                np.array([1.0, 0, 0, 0]),
+                np.array([0.0, 0.0, 0.30]),
+            )
+            self._torch.cuda.synchronize()
+        finally:
+            self._pub, self.cfg.record_path = pub, rec
+            self._backend.clear([0])
+            self._prev_pos = None
+            self.n_ticks = 0
+            self.last_stats = {}
+        if self.cfg.verbose:
+            print(
+                f"[em] 지도 warmup {(time.perf_counter() - t0) * 1e3:.0f} ms",
+                flush=True,
+            )
 
     def start_dds(self) -> None:
         from unitree_sdk2py.core.channel import ChannelPublisher, ChannelSubscriber
@@ -527,6 +816,13 @@ class EmSidecar:
         if self.cfg.publish_diag:
             self._pub_diag = ChannelPublisher(self.cfg.publish_topic + "_valid", HeightMap_)
             self._pub_diag.Init()
+        if self._use_mit or self.cfg.sim_gyro_bias:
+            # go2_ctrl 은 rt/parkour/gyro_bias 하트비트가 있어야 Policy 에 들어간다.
+            from go2_bridge.gyro_bias_output import GyroBiasOutput
+
+            self._bias_out = GyroBiasOutput()
+        if self._use_mit:
+            self._warmup()
 
         self._sub_low = ChannelSubscriber(TOPIC_LOWSTATE, LowState_)
         self._sub_low.Init(self.on_lowstate, 10)
@@ -547,21 +843,47 @@ class EmSidecar:
         finally:
             # SIGINT 로 끝나는 게 보통이라 기록은 반드시 여기서 떨군다.
             self.save_record()
+            if self._bias_out is not None:
+                self._bias_out.close(self.latest.low_tick)
 
     def _run(self, duration: float | None, report_period: float) -> None:
         self.start_dds()
         t0 = time.time()
         last = t0
+        n_loop = 0
         while duration is None or time.time() - t0 < duration:
             time.sleep(0.1)
+            n_loop += 1
+            if self._bias_out is not None and n_loop % 2 == 0:
+                # 브리지 gyro_bias_status 와 같다: 보정 완료 + lowstate 100 ms 이내.
+                with self.latest.lock:
+                    tick, wall = self.latest.low_tick, self.latest.low_wall
+                fresh = 0.0 <= time.monotonic() - wall <= 0.1
+                if self._mit is not None:
+                    self._bias_out.publish(
+                        bool(self._mit.calibrated and fresh), self._mit.gyro_bias, tick
+                    )
+                else:
+                    self._bias_out.publish(fresh, np.zeros(3), tick)
             if self.cfg.verbose and time.time() - last >= report_period:
                 last = time.time()
                 s = self.last_stats
                 if not s:
                     with self.latest.lock:
                         nl, ns = self.latest.n_low, self.latest.n_sport
-                    print(f"[em] 대기 중 — lowstate {nl}건 sportmodestate {ns}건, 점군 0건",
-                          flush=True)
+                    print(
+                        f"[em] 대기 중 — lowstate {nl}건 sportmodestate {ns}건, 점군 0건",
+                        flush=True,
+                    )
+                    if self._mit is not None and not self._mit.calibrated:
+                        # 보정 창이 왜 안 차는지: 네 발 > 임계, |gyro| ≤ 0.1, 관절 ≤ 0.005 rad,
+                        # 자세 ≤ 0.01 rad, gyro σ ≤ 0.025 가 10 s 이어져야 한다.
+                        w, d = self._mit._calibration, self._mit_dbg
+                        print(
+                            f"[em]   MIT 보정 대기: 창 {0.0 if w is None else w['previous'] - w['start']:.1f} s  "
+                            f"발힘(IL) {np.round(d.get('ff', []), 1)}  |gyro|max {d.get('gyro', float('nan')):.3f}",
+                            flush=True,
+                        )
                     continue
                 obs = self.h_obs[self.valid_frac > 1e-6]
                 print(

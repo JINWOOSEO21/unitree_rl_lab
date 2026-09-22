@@ -28,30 +28,81 @@ def main() -> int:
     p.add_argument("--iface", default="lo")
     p.add_argument("--topic", default="rt/parkour/scandots")
     p.add_argument("--duration", type=float, default=None, help="초 (미지정이면 무한)")
-    p.add_argument("--train-noise", action="store_true",
-                   help="학습과 같은 EM 입력 노이즈를 얹는다 (sim2sim 실험용).")
-    p.add_argument("--train-noise-odom-mult", type=float, default=1.0,
-                   help="odometry 노이즈(scale σ, walk, bias 범위) 배율 — 정책의 내성 측정용")
-    p.add_argument("--train-noise-scale-bias", type=float, default=None,
-                   help="odometry scale bias 를 고정값으로 (예: -0.06). 추정기 계통 편향 흉내")
-    p.add_argument("--record", default=None,
-                   help="tick 마다 (시각, base pose, scan, valid) 를 npz 로 남긴다. "
-                        "주행 중에도 지도가 맞는지 지형과 대조하기 위한 것.")
-    p.add_argument("--record-map", action="store_true",
-                   help="--record 와 함께: tick 마다 EM 전체 지도도 남긴다 (영상용)")
-    p.add_argument("--odom", choices=["sport", "leg"], default="sport",
-                   help="base 위치 출처. sport=rt/sportmodestate, "
-                        "leg=다리 운동학+IMU 자체 적분 (실기 저수준 제어용 후보).")
-    p.add_argument("--leg-contact-thr", type=float, default=None, help="[N] leg 접촉 임계")
-    p.add_argument("--leg-foot-radius", type=float, default=None, help="[m] leg 발 구름 보정")
-    p.add_argument("--leg-no-seed", action="store_true",
-                   help="leg 시작점을 sportmodestate 에 맞추지 않고 0 에서 시작 (실기 조건)")
-    p.add_argument("--leg-shadow", action="store_true",
-                   help="지도는 sport 로 만들고 leg 추정기는 옆에서 기록만 (추정기 단독 평가)")
+    p.add_argument(
+        "--train-noise",
+        action="store_true",
+        help="학습과 같은 EM 입력 노이즈를 얹는다 (sim2sim 실험용).",
+    )
+    p.add_argument(
+        "--train-noise-odom-mult",
+        type=float,
+        default=1.0,
+        help="odometry 노이즈(scale σ, walk, bias 범위) 배율 — 정책의 내성 측정용",
+    )
+    p.add_argument(
+        "--train-noise-scale-bias",
+        type=float,
+        default=None,
+        help="odometry scale bias 를 고정값으로 (예: -0.06). 추정기 계통 편향 흉내",
+    )
+    p.add_argument(
+        "--record",
+        default=None,
+        help="tick 마다 (시각, base pose, scan, valid) 를 npz 로 남긴다. "
+        "주행 중에도 지도가 맞는지 지형과 대조하기 위한 것.",
+    )
+    p.add_argument(
+        "--record-map",
+        action="store_true",
+        help="--record 와 함께: tick 마다 EM 전체 지도도 남긴다 (영상용)",
+    )
+    p.add_argument(
+        "--odom",
+        choices=["sport", "leg", "mit"],
+        default="sport",
+        help="base 위치 출처. sport=rt/sportmodestate, "
+        "leg=다리 운동학+IMU 자체 적분 (실기 저수준 제어용 후보), "
+        "mit=브리지와 같은 MitPose (IMU+다리 칼만, 정지 10 s 보정 필요).",
+    )
+    p.add_argument("--mit-odom-hz", type=float, default=75.0, help="mit 추정 주기 [Hz]")
+    p.add_argument(
+        "--leg-odom-hz",
+        type=float,
+        default=100.0,
+        help="leg 추정 주기 [Hz] (브리지 기본값과 같음). 0 이면 lowstate 표본마다 — 1 kHz 에서는 점군 tick 을 굶긴다",
+    )
+    p.add_argument(
+        "--sim-gyro-bias",
+        action="store_true",
+        help="sport/leg: bias 0 의 gyro bias 하트비트를 낸다 (go2_ctrl Policy 게이트용). "
+        "시뮬레이터 전용 — 실기에서는 브리지가 보정값을 낸다.",
+    )
+    p.add_argument(
+        "--mit-skip-bad-pose",
+        action="store_true",
+        help="mit pose 가 무효일 때 scandots 를 무효화(→ go2_ctrl 즉시 Passive)하지 않고 "
+        "그 tick 만 건너뛴다. 기본은 브리지와 같은 무효화. 실험용.",
+    )
+    p.add_argument(
+        "--leg-contact-thr", type=float, default=None, help="[N] leg 접촉 임계"
+    )
+    p.add_argument(
+        "--leg-foot-radius", type=float, default=None, help="[m] leg 발 구름 보정"
+    )
+    p.add_argument(
+        "--leg-no-seed",
+        action="store_true",
+        help="leg 시작점을 sportmodestate 에 맞추지 않고 0 에서 시작 (실기 조건)",
+    )
+    p.add_argument(
+        "--leg-shadow",
+        action="store_true",
+        help="지도는 sport 로 만들고 leg 추정기는 옆에서 기록만 (추정기 단독 평가)",
+    )
     a = p.parse_args()
 
     leg_cfg = None
-    if a.odom == "leg" or a.leg_shadow:
+    if a.odom in ("leg", "mit") or a.leg_shadow:
         from .leg_odometry import LegOdomCfg
         leg_cfg = LegOdomCfg()
         if a.leg_contact_thr is not None:
@@ -86,6 +137,10 @@ def main() -> int:
         leg_odom=leg_cfg,
         leg_seed_from_sport=not a.leg_no_seed,
         leg_shadow=a.leg_shadow,
+        mit_odom_hz=a.mit_odom_hz,
+        leg_odom_hz=a.leg_odom_hz,
+        sim_gyro_bias=a.sim_gyro_bias,
+        mit_invalidate_on_bad_pose=not a.mit_skip_bad_pose,
     )
     EmSidecar(cfg).run(duration=a.duration)
     return 0
