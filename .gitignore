@@ -78,5 +78,5 @@ datasets
 .omc/
 .claude/worktrees/
 
-# 렌더된 sim2sim 영상 (tools/render_video.py 산출물)
+# 렌더된 sim2sim 영상 (eval/render_video.py 산출물)
 deploy/parkour/videos/

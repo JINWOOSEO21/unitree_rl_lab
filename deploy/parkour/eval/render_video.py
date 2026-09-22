@@ -5,8 +5,8 @@ IsaacLab 의 `play.py --multicam --with_scandots` 를 MuJoCo 판으로 옮긴 �
 sim 시각 기준으로 관절각·자세(lowstate_raw, 500 Hz)와 tick 별 scandots(정책 입력 132)
 가 함께 있으므로 프레임 시각을 정확히 맞출 수 있다.
 
-    python tools/render_video.py em_ticks_vr3_1.npz --scene ramp --out videos/mujoco_ramp.mp4
-    python tools/render_video.py em_ticks_vs3_3.npz --scene stairs --out videos/mujoco_stairs.mp4
+    python eval/render_video.py em_ticks_vr3_1.npz --scene ramp --out videos/mujoco_ramp.mp4
+    python eval/render_video.py em_ticks_vs3_3.npz --scene stairs --out videos/mujoco_stairs.mp4
 
 패널
 ----

@@ -1,7 +1,7 @@
 """LowState adapter for MIT-style body-IMU/leg odometry; no DDS or ROS."""
 import numpy as np
-from go2_leg_pose import LegPose
-from policy_input_guard import GuardConfig, validate_lowstate
+from .leg_pose import LegPose
+from .input_guard import GuardConfig, validate_lowstate
 from em_sidecar.mit_odometry import MitOdometry, MitConfig, multiply
 from em_sidecar.kinematics import quat_to_mat
 

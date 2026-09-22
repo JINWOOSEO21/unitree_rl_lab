@@ -17,7 +17,6 @@ from types import SimpleNamespace
 import numpy as np
 
 PARKOUR_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PARKOUR_ROOT))
 
 from em_sidecar.kinematics import Go2Kinematics, quat_to_mat, yaw_from_quat
 from em_sidecar.pointcloud import decode_xyz

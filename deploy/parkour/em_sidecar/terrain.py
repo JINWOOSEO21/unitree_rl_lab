@@ -3,7 +3,7 @@ from pathlib import Path
 
 import numpy as np
 
-META = Path(__file__).resolve().parents[1] / "mujoco/assets/terrain/terrain_meta.npz"
+META = Path(__file__).resolve().parents[1] / "terrain/assets/terrain/terrain_meta.npz"
 
 
 class Terrain:

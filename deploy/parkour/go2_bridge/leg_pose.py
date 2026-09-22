@@ -12,10 +12,9 @@ import numpy as np
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
 from em_sidecar.kinematics import Go2Kinematics
 from em_sidecar.leg_odometry import LegOdometry, LegOdomCfg
-from policy_input_guard import GuardConfig, validate_lowstate
+from .input_guard import GuardConfig, validate_lowstate
 
 
 class LegPose:

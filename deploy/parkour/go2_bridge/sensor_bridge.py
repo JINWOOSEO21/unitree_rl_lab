@@ -20,16 +20,16 @@ import time
 
 import numpy as np
 
-from replay_go2_base_scan import (
+from .base_scan import (
     EXPECTED_FRAME, PARKOUR_ROOT, _load_backend, backend_input_from_base_cloud, odom_pose,
     validate_policy_scan, Go2Kinematics, quat_to_mat, yaw_from_quat,
 )
 from em_sidecar.go2_cloud import RAW_FRAME, raw_cloud_to_base
-from go2_leg_pose import LegPose
-from go2_mit_pose import MitPose
-from go2_gyro_bias_output import GyroBiasOutput
-from policy_input_guard import GuardConfig, validate_lowstate
-from go2_scandots_output import ScandotsOutput
+from .leg_pose import LegPose
+from .mit_pose import MitPose
+from .gyro_bias_output import GyroBiasOutput
+from .input_guard import GuardConfig, validate_lowstate
+from .scandots_output import ScandotsOutput
 
 
 def low_row(msg, include_acceleration=False):
@@ -157,7 +157,7 @@ def dependencies(odom_source="leg"):
     import cupy
     if odom_source == 'mit':
         # Defer participant creation until after interface-specific initialization.
-        from go2_mit_dds import subscriber_type
+        from .mit_dds import subscriber_type
         factory = [None]
         def initialize(domain, interface):
             ChannelFactoryInitialize(domain, interface)
@@ -274,7 +274,7 @@ def run(interface, domain, duration, emcupy_root, emit, odom_source='leg', leg_c
     runtime_stack = ExitStack()
     try:
         if odom_source == 'mit':
-            from go2_mit_dds import initialized_heap_gc_scope
+            from .mit_dds import initialized_heap_gc_scope
             runtime_stack.enter_context(initialized_heap_gc_scope())
         if publish_scandots:
             output = ScandotsOutput(scandots_topic)

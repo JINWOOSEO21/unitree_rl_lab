@@ -43,7 +43,7 @@ Jetson에서 먼저 센서 브리지를 실행합니다.
 
 ```bash
 source ~/walking/env.sh
-python "$GO2_PARKOUR/tools/go2_sensor_bridge.py" \
+python -m go2_bridge \
   --interface eth0 --odom mit --emcupy-root "$GO2_EMCUPY" \
   --publish-scandots --summary-only
 ```
@@ -51,7 +51,7 @@ python "$GO2_PARKOUR/tools/go2_sensor_bridge.py" \
 `--odom leg`가 기본값이며 100 Hz, `--odom mit`는 기본 75 Hz입니다.
 `--leg-odom-hz`와 `--mit-odom-hz`로 각각 변경합니다.
 `--check-dependencies`는 DDS participant 생성 없이 import를 확인합니다.
-MIT의 센서·좌표계·추정 방법은 [MIT odometry 안내](parkour/tools/MIT_ODOMETRY.md)를 참고하세요.
+MIT의 센서·좌표계·추정 방법은 [MIT odometry 안내](parkour/go2_bridge/MIT_ODOMETRY.md)를 참고하세요.
 
 노트북의 X11 데스크톱에서 포커스된 터미널을 열고 컨트롤러를 실행합니다.
 `enx00e04c637ac7`은 로봇에 연결된 유선 인터페이스 이름으로 바꿉니다.
@@ -77,10 +77,12 @@ Ctrl+C는 Stand → StandDown → 자세 확인 후 종료입니다.
 ## 유지되는 파일
 
 - `parkour/contract/`: 정책 ONNX, 관측 계약, 기구학·scan 격자.
-- `parkour/tools/`, `parkour/em_sidecar/`, `parkour/vendored/`: 센서 브리지,
+- `parkour/go2_bridge/`(실기), `parkour/em_sidecar/`(MuJoCo), `parkour/vendored/`: 센서 브리지,
   odometry, elevation map 연결 및 기록·시각화 도구.
 - `parkour/notebook_setup.sh`: 노트북(controller) 측 의존성·SDK·빌드 준비.
-- `parkour/mujoco/`, 저장소의 `source/`와 `scripts/`: 시뮬레이션·학습.
+- `parkour/eval/`: 주행 기록·오도메트리 분석·영상 렌더 (런타임이 import 하지 않음).
+- `parkour/terrain/`: IsaacLab 지형을 MuJoCo hfield/scene 으로 변환하는 자산 생성.
+- 저장소의 `source/`와 `scripts/`: 학습.
 - `thirdparty/`, `../doc/licenses/`, `../LICENCE`: 런타임 의존성과 라이선스.
 
 빌드 디렉터리, 센서 로그, 캐시, 영상은 Git에 포함하지 않습니다.

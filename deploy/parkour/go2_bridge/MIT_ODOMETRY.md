@@ -9,7 +9,7 @@ https://github.com/mit-biomimetics/Cheetah-Software/blob/master/common/src/Contr
 
 ```bash
 source ~/walking/env.sh
-python "$GO2_PARKOUR/tools/go2_sensor_bridge.py" \
+python -m go2_bridge \
   --interface eth0 --odom mit --emcupy-root "$GO2_EMCUPY" --summary-only
 ```
 
