@@ -86,13 +86,21 @@ simulate/build/unitree_mujoco
 # 2. 높이맵 사이드카 (unitree_rl_lab 루트)
 python deploy/parkour/em_sidecar --odom mit          # sport/leg 면 --sim-gyro-bias 추가
 
-# 3. 컨트롤러 (unitree_rl_lab 루트). 키 1 기립 → 정지 10 s (gyro 보정) → 2 정책 → w 속도 ↑
-deploy/robots/go2/build/go2_ctrl --sim --network lo
+# 3. 컨트롤러 (unitree_rl_lab 루트, 포커스된 터미널). 키는 실기와 같다:
+#    1 기립 → 정지 10 s (gyro 보정) → 2 정책 → w 속도 ↑ → Space 기립 복귀 → 3 하강 → Ctrl+C 종료
+deploy/robots/go2/build/go2_ctrl --sim --network lo --keyboard
 ```
 
+`--keyboard` 없이 띄우면 키를 **시뮬레이터 터미널**에 입력해야 합니다. 시뮬레이터가 키를
+무선 조종기 버튼으로 바꿔 보내는 방식이라 `1`(LT+A)·`2`(Start)·`0`(LT+B)·w/s/a/d/q/e·Space만
+있고 `3`(하강)은 없습니다. 조종기 경로에서는 `2`가 눌린 순간 기립 완료·scandots·자세·gyro
+bias 조건이 모두 맞아야 하고 키는 1 s만 유지되므로, 기립 후 몇 초 기다렸다 누릅니다.
+거부되면 `Policy entry rejected: …` 로그가 이유를 알려 줍니다.
+
 시뮬레이터는 시작·Backspace 리셋 때 `go2.xml`의 `down` 키프레임(실기의 접힌 자세)으로
-로봇을 놓습니다. 세 단계를 자동으로 수행하고 기록·영상까지 남기는 것이
-`deploy/parkour/eval/mujoco_walk_record.py`입니다.
+로봇을 놓고, `go2_ctrl`이 첫 LowCmd를 보낼 때까지 그 자세를 약한 PD로 유지합니다
+(관절 마찰이 0이라 토크 없이 두면 자세가 무너집니다). 세 단계를 자동으로 수행하고
+기록·영상까지 남기는 것이 `deploy/parkour/eval/mujoco_walk_record.py`입니다.
 
 ## 유지되는 파일
 

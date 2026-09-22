@@ -160,6 +160,8 @@ def main() -> int:
         action="store_true",
         help="사이드카에 그대로 넘긴다 (무효 pose 에서 scandots 무효화 대신 tick 건너뜀)",
     )
+    ap.add_argument("--no-fold", action="store_true", help="go2_ctrl 전 FOLD(접힌 자세 만들기)를 생략 — 수동 실행 흐름 재현")
+    ap.add_argument("--pre-stand-wait", type=float, default=0.0, help="go2_ctrl 기동 후 '1' 까지 추가 대기 [s] — 수동 실행 흐름 재현")
     ap.add_argument(
         "--stand-wait",
         type=float,
@@ -222,12 +224,15 @@ def main() -> int:
         stderr=subprocess.STDOUT,
         stdin=subprocess.DEVNULL,
     )
-    fold = py_snippet(a.python, FOLD.replace("@P@", str(PARKOUR)), 60)
-    print(
-        "[run] 접힌 자세:",
-        [ln for ln in fold.splitlines() if ln.startswith("FOLD")],
-        flush=True,
-    )
+    if a.no_fold:
+        print("[run] FOLD 생략 (--no-fold): 시뮬레이터 시작 자세 그대로", flush=True)
+    else:
+        fold = py_snippet(a.python, FOLD.replace("@P@", str(PARKOUR)), 60)
+        print(
+            "[run] 접힌 자세:",
+            [ln for ln in fold.splitlines() if ln.startswith("FOLD")],
+            flush=True,
+        )
     env = dict(os.environ)
     env["LD_LIBRARY_PATH"] = "/usr/local/lib:" + env.get("LD_LIBRARY_PATH", "")
     ctrl = subprocess.Popen(
@@ -261,6 +266,9 @@ def main() -> int:
         if ctrl.poll() is not None or side.poll() is not None:
             print("go2_ctrl 또는 사이드카가 즉시 종료 — 로그 확인:", log_dir)
             return 1
+        if a.pre_stand_wait > 0:
+            print(f"[run] '1' 전 {a.pre_stand_wait:.0f} s 대기 (Passive 상태로 방치 — 수동 흐름 재현)", flush=True)
+            time.sleep(a.pre_stand_wait)
         os.write(master, b"1")  # FixStand
         t_stand = time.time()
         print("[run] 기립 — MIT 보정(10 s 정지)과 첫 scandots 를 기다린다", flush=True)
