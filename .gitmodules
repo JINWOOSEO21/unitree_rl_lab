@@ -1,3 +1,6 @@
 [submodule "deploy/parkour/thirdparty/cyclonedds"]
 	path = deploy/parkour/thirdparty/cyclonedds
 	url = https://github.com/eclipse-cyclonedds/cyclonedds.git
+[submodule "deploy/parkour/thirdparty/elevation_mapping_cupy"]
+	path = deploy/parkour/thirdparty/elevation_mapping_cupy
+	url = https://github.com/leggedrobotics/elevation_mapping_cupy.git
