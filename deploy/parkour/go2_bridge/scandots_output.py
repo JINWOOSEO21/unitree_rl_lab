@@ -25,12 +25,14 @@ class ScandotsOutput:
     def publish(self, scan, position, source_ns, now_ns):
         values = np.asarray(scan, dtype=np.float32)
         position = np.asarray(position, dtype=np.float64)
+
         if values.shape != (132,) or not np.isfinite(values).all() or np.any(np.abs(values) > 1):
             raise ValueError('invalid normalized scandots')
         if position.shape != (3,) or not np.isfinite(position).all():
             raise ValueError('invalid scandots origin')
         if not 0 <= now_ns-source_ns <= 200_000_000:
             raise ValueError('scandots source cloud is stale or future-dated')
+
         with self.lock:
             if self.last_source is not None and source_ns <= self.last_source:
                 raise ValueError('scandots source must advance')

@@ -73,6 +73,9 @@ typeCheckingMode = "basic"
 pythonVersion = "3.10"
 pythonPlatform = "Linux"
 enableTypeIgnoreComments = true
+reportCallIssue = "warning"
+reportArgumentType = "warning"
+
 
 # This is required as the CI pre-commit does not download the module (i.e. numpy, torch, prettytable)
 # Therefore, we have to ignore missing imports

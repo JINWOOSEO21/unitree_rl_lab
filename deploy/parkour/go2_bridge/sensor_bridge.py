@@ -21,7 +21,7 @@ import time
 import numpy as np
 
 from .base_scan import (
-    EXPECTED_FRAME, PARKOUR_ROOT, _load_backend, backend_input_from_base_cloud, odom_pose,
+    EXPECTED_FRAME, PARKOUR_ROOT, load_backend, backend_input_from_base_cloud, odom_pose,
     validate_policy_scan, Go2Kinematics, quat_to_mat, yaw_from_quat,
 )
 from em_sidecar.go2_cloud import RAW_FRAME, raw_cloud_to_base
@@ -82,7 +82,7 @@ class BaseMapper:
     def __init__(self, emcupy_root, device='cuda:0'):
         import torch
         self.torch, self.device = torch, device
-        self.backend = _load_backend(emcupy_root, device)
+        self.backend = load_backend(emcupy_root, device)
         self.xy = Go2Kinematics(PARKOUR_ROOT / 'contract/em_geometry.npz').scan_offsets_xy
         self.last_position = None
 
@@ -107,12 +107,15 @@ class BaseMapper:
         """
         rng = np.random.default_rng(0)
         xy = rng.uniform(-1.5, 1.5, size=(4096, 2))
-        points = np.column_stack([xy, np.full(len(xy), -0.30)]).astype(np.float32)
+        constant_z = np.full((len(xy), 1), -0.30).astype(np.float32)
+        points = np.concatenate([xy, constant_z], axis=1).astype(np.float32)
+
         row = {'frame_id': 'odom', 'child_frame_id': EXPECTED_FRAME,
                'position': {'x': 0.0, 'y': 0.0, 'z': 0.30},
                'orientation': {'w': 1.0, 'x': 0.0, 'y': 0.0, 'z': 0.0}}
         started = time.perf_counter()
         error = None
+
         try:
             self.update(None, row, base_points=points)
         except Exception as exc:
@@ -128,12 +131,15 @@ class BaseMapper:
     def update(self, cloud, row, base_points=None):
         points = raw_cloud_to_base(cloud) if base_points is None else base_points
         position, quat = odom_pose(row)
+
         if self.last_position is not None and np.linalg.norm(position-self.last_position) > 1.0:
             raise RuntimeError('odometry discontinuity: restart bridge to reset map')
         if not len(points):
             raise ValueError('empty_finite_cloud')
+
         rotation = quat_to_mat(quat)
         pts, rot, pos = backend_input_from_base_cloud(points, position, rotation)
+
         def tensor(x):
             return self.torch.as_tensor(x, dtype=self.torch.float32, device=self.device)
         self.backend.update([tensor(pts)], tensor(rot)[None], tensor(pos)[None],
@@ -143,6 +149,7 @@ class BaseMapper:
         xy = np.stack([position[0]+c*self.xy[:,0]-s*self.xy[:,1],
                        position[1]+s*self.xy[:,0]+c*self.xy[:,1]], axis=-1)
         scan, valid, upper = self.backend.sample(tensor(xy)[None], tensor([position[2]]))
+
         self.last_position = position
         return (validate_policy_scan(scan[0].detach().cpu().numpy()),
                 valid[0].detach().cpu().numpy(), upper[0].detach().cpu().numpy())
@@ -155,27 +162,35 @@ def dependencies(odom_source="leg"):
     from unitree_sdk2py.idl.nav_msgs.msg.dds_ import Odometry_
     import torch
     import cupy
+
     if odom_source == 'mit':
         # Defer participant creation until after interface-specific initialization.
         from .mit_dds import subscriber_type
         factory = [None]
+
         def initialize(domain, interface):
             ChannelFactoryInitialize(domain, interface)
             factory[0] = subscriber_type(domain)
+
         def subscribe(name, typ):
             return factory[0](name, typ)
         return initialize, subscribe, LowState_, PointCloud2_, Odometry_
+
     return ChannelFactoryInitialize, ChannelSubscriber, LowState_, PointCloud2_, Odometry_
 
 
 def run(interface, domain, duration, emcupy_root, emit, odom_source='leg', leg_contact_threshold=20.0,
         publish_scandots=False, scandots_topic='rt/parkour/scandots', leg_odom_hz=100.0, mit_odom_hz=75.0):
+
     if odom_source not in ('leg', 'robot', 'mit'):
         raise ValueError('odom source must be leg, mit or robot')
+
     initialize, subscriber, low_type, cloud_type, odom_type = dependencies(odom_source)
+
     mapper = BaseMapper(emcupy_root)
     # Before any subscriber exists, so the JIT cannot starve the DDS reader. See warmup().
     mapper.warmup()
+
     # The estimator runs slower than the topic on purpose: its kinematics cost 1.5 ms per
     # sample on the Jetson, and at 500 Hz that holds the GIL for 76 % of a core -- the cloud
     # reader, the tick loop and the GPU call all starve behind it. The map consumes pose at
@@ -276,20 +291,24 @@ def run(interface, domain, duration, emcupy_root, emit, odom_source='leg', leg_c
         if odom_source == 'mit':
             from .mit_dds import initialized_heap_gc_scope
             runtime_stack.enter_context(initialized_heap_gc_scope())
+
         if publish_scandots:
             output = ScandotsOutput(scandots_topic)
             if leg is not None:
                 bias_output = GyroBiasOutput()
+
         channels = [
             ('rt/lowstate', low_type, low_callback),
             ('rt/utlidar/cloud', cloud_type, lambda m: sensor_callback('cloud', m)),
         ]
         if odom_source == 'robot':
             channels.append(('rt/utlidar/robot_odom', odom_type, lambda m: sensor_callback('odom', m)))
+
         for topic, typ, callback in channels:
             sub = subscriber(topic, typ)
             sub.Init(callback, 0)  # sample time at DDS callback, without queued delivery
             subs.append(sub)
+
         start = time.monotonic()
         next_tick = start
         next_bias = start + 0.2
@@ -301,12 +320,14 @@ def run(interface, domain, duration, emcupy_root, emit, odom_source='leg', leg_c
                     sub.check()
             loop_now = time.monotonic()
             next_tick = max(next_tick+0.1, loop_now)
+
             with lock:
                 item = latest[0]
                 pose_snapshot = list(poses)
                 version = generation[0]
                 rebuild = rebuild_map[0]
                 rebuild_map[0] = False
+
             if rebuild:
                 # Everything in the map predates a stretch of travel the pose never
                 # integrated, so it is offset by that unmeasured distance. Drop it and let
@@ -315,6 +336,7 @@ def run(interface, domain, duration, emcupy_root, emit, odom_source='leg', leg_c
                     mapper.discard_map()
                 except Exception as exc:
                     failure('fatal', f'map reset failed: {exc}')
+
             if bias_output is not None and loop_now >= next_bias:
                 try:
                     with lock:
@@ -324,7 +346,8 @@ def run(interface, domain, duration, emcupy_root, emit, odom_source='leg', leg_c
                     bias_output.publish(calibrated, bias, source_tick)
                 except Exception as exc:
                     failure('fatal', f'gyro bias: {exc}')
-                next_bias = max(next_bias + 0.2, loop_now)
+                next_bias = max(next_bias + 0.2, loop_now
+                                )
             if item is None or item[1] == last_cloud:
                 if output is not None:
                     with lock:
@@ -339,10 +362,12 @@ def run(interface, domain, duration, emcupy_root, emit, odom_source='leg', leg_c
             try:
                 if time.monotonic_ns()-receipt > 200_000_000:
                     raise ValueError('cloud_too_old')
+
                 row = preceding_pose(pose_snapshot, receipt)
                 map_update_started = True
                 map_row = row.get('mapping_pose', row)
                 scan, valid, upper = mapper.update(cloud, map_row)
+
                 with lock:
                     now = time.monotonic_ns()
                     if fatal.is_set() or generation[0] != version:
@@ -353,6 +378,7 @@ def run(interface, domain, duration, emcupy_root, emit, odom_source='leg', leg_c
                         raise ValueError('lowstate_too_old_after_mapping')
                     if not poses or poses[-1][1].get('pose_valid') is False:
                         raise ValueError('mit_odom_no_reliable_support' if odom_source == 'mit' else 'leg_odom_no_reliable_support')
+
                     if output is not None:
                         position, _ = odom_pose(map_row)
                         output.publish(scan, position, receipt, now)
@@ -360,6 +386,7 @@ def run(interface, domain, duration, emcupy_root, emit, odom_source='leg', leg_c
                           'source_ns': receipt, 'source_id': stamp, 'scan': scan.tolist(),
                           'odometry': row,
                           'valid_fraction': valid.tolist(), 'upper_bound_fraction': upper.tolist()})
+
             except ValueError as exc:
                 failure('fault', str(exc))
                 if map_update_started:
@@ -405,18 +432,22 @@ def main():
                         help='MIT estimator rate; default 75 Hz leaves margin for mapping')
     parser.add_argument('--check-dependencies', action='store_true')
     args = parser.parse_args()
+
     if args.check_dependencies:
         dependencies(args.odom)
         print('DDS types and torch/cupy import OK; no DDS participant created')
         return
+
     if not args.network or not 0 <= args.duration <= 300 or not 0 <= args.domain <= 232:
         parser.error('interface required; duration in [0,300], domain in [0,232]')
+
     output = sys.stdout
     write_lock = threading.Lock()
     counters = {'low':0, 'scan':0, 'fault':0, 'fatal':0}
     last_report = [0.0]
     last_reason = [None]
     last_calibration = [None]
+
     def emit(event):
         with write_lock:
             if args.summary_only:
@@ -437,6 +468,7 @@ def main():
                              leg_calibration=last_calibration[0], odom_source=args.odom)
             output.write(json.dumps(event, allow_nan=False, separators=(',', ':'))+'\n')
             output.flush()
+
     with redirect_stdout(sys.stderr):
         try:
             code = run(args.network, args.domain, args.duration, args.emcupy_root, emit,

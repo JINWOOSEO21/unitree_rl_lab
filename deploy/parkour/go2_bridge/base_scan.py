@@ -90,6 +90,7 @@ def odom_pose(row: dict) -> tuple[np.ndarray, np.ndarray]:
     """Return base position and normalized wxyz quaternion from robot_odom."""
     if row.get("frame_id") != "odom" or row.get("child_frame_id") != EXPECTED_FRAME:
         raise ValueError("robot_odom must describe odom -> base_link")
+
     p = row["position"]
     o = row["orientation"]
     position = np.asarray([p["x"], p["y"], p["z"]], dtype=np.float64)
@@ -97,6 +98,7 @@ def odom_pose(row: dict) -> tuple[np.ndarray, np.ndarray]:
     norm = float(np.linalg.norm(quat))
     if not np.isfinite(position).all() or not np.isfinite(quat).all() or norm < 1e-6:
         raise ValueError("robot_odom contains an invalid pose")
+
     return position, quat / norm
 
 
@@ -118,10 +120,13 @@ def backend_input_from_base_cloud(
     position = np.asarray(base_position, dtype=np.float64)
     rotation = np.asarray(base_rotation, dtype=np.float64)
     origin = np.asarray(sensor_origin_in_base, dtype=np.float64)
+
     if points.ndim != 2 or points.shape[1:] != (3,):
         raise ValueError("points_base must have shape (N, 3)")
+
     if position.shape != (3,) or rotation.shape != (3, 3) or origin.shape != (3,):
         raise ValueError("invalid pose or sensor-origin shape")
+
     points_from_sensor_origin = points - origin
     sensor_position_odom = position + rotation @ origin
     return points_from_sensor_origin, rotation, sensor_position_odom
@@ -136,7 +141,7 @@ def validate_policy_scan(scan: np.ndarray) -> np.ndarray:
     return scan
 
 
-def _load_backend(emcupy_root: Path, device: str):
+def load_backend(emcupy_root: Path, device: str):
     import os
 
     os.environ["EMCUPY_ROOT"] = str(emcupy_root)
@@ -175,7 +180,7 @@ def replay(
     cloud_dir = recording / "utlidar_cloud_base"
     clouds, _ = _read_rows(cloud_dir / "cloud.jsonl")
     odom, odom_times = _read_rows(recording / "robot_odom.jsonl")
-    backend = _load_backend(emcupy_root, device)
+    backend = load_backend(emcupy_root, device)
     scan_xy = Go2Kinematics(PARKOUR_ROOT / "contract" / "em_geometry.npz").scan_offsets_xy
     if scan_xy.shape != (POLICY_SCAN_SIZE, 2):
         raise ValueError(f"unexpected scan geometry {scan_xy.shape}")
