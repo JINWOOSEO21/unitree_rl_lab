@@ -38,12 +38,14 @@ GOAL_META = PARKOUR / "terrain/assets/terrain/terrain_meta.npz"
 GOAL_TERRAIN = "parkour_trapezoid_ramp"
 
 
-def final_goal_x() -> float:
+def final_goal_x(
+    meta_path: Path = GOAL_META, terrain_name: str = GOAL_TERRAIN
+) -> float:
     """마지막 goal 의 x (MuJoCo 월드 = IsaacLab 스폰 기준)."""
     import numpy as np
 
-    m = np.load(GOAL_META, allow_pickle=True)
-    col = int(np.where(m["terrain_names"][0, :, 0] == GOAL_TERRAIN)[0][0])
+    m = np.load(meta_path, allow_pickle=True)
+    col = int(np.where(m["terrain_names"][0, :, 0] == terrain_name)[0][0])
     return float(
         m["goals"][0, col, -1, 0]
         + m["terrain_origins"][0, col, 0]
@@ -146,6 +148,25 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--odom", choices=["mit", "sport", "leg"], default="mit")
     ap.add_argument("--out", required=True, help="사이드카 기록 npz")
+    ap.add_argument(
+        "--scene",
+        default=None,
+        help="unitree_mujoco 씬 XML (지정 시 절대경로로 변환해 -s 로 전달)",
+    )
+    ap.add_argument(
+        "--terrain-meta",
+        default=str(GOAL_META),
+        help="종료 goal 이 들어 있는 terrain_meta.npz",
+    )
+    ap.add_argument(
+        "--goal-terrain", default=GOAL_TERRAIN, help="종료 지점을 가져올 terrain 이름"
+    )
+    ap.add_argument(
+        "--ctrl-dir",
+        default=str(CTRL_DIR),
+        help="go2_ctrl 바이너리와 config.yaml 이 있는 폴더",
+    )
+    ap.add_argument("--device", default="cuda:0", help="사이드카 EM 장치 (예: cuda:0, cpu)")
     ap.add_argument("--duration", type=float, default=25.0, help="Policy 주행 시간 [s]")
     ap.add_argument(
         "--vx",
@@ -178,10 +199,12 @@ def main() -> int:
     )
     a = ap.parse_args()
     out = Path(a.out).resolve()
+    terrain_meta = Path(a.terrain_meta).resolve()
+    ctrl_dir = Path(a.ctrl_dir).resolve()
     log_dir = Path(a.log_dir) if a.log_dir else out.parent
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    os.environ["SIM_ARGS"] = ""
+    os.environ["SIM_ARGS"] = f"-s {Path(a.scene).resolve()}" if a.scene else ""
     for attempt in range(3):  # 직전 실행 직후에는 시뮬레이터가 가끔 바로 죽는다
         master, sim, leader = spawn_sim_on_pty(True, SIM_DIR, a.display)
         time.sleep(4.0)
@@ -210,6 +233,8 @@ def main() -> int:
             "em_sidecar",
             "--odom",
             a.odom,
+            "--device",
+            a.device,
             "--record",
             str(out),
             "--record-map",
@@ -237,7 +262,7 @@ def main() -> int:
     env["LD_LIBRARY_PATH"] = "/usr/local/lib:" + env.get("LD_LIBRARY_PATH", "")
     ctrl = subprocess.Popen(
         ["./go2_ctrl", "--sim", "--network", "lo"],
-        cwd=CTRL_DIR,
+        cwd=ctrl_dir,
         env=env,
         stdout=ctrl_log,
         stderr=subprocess.STDOUT,
@@ -301,7 +326,7 @@ def main() -> int:
             os.write(master, b"w")
         print(f"[run] 속도 명령 {0.3 + 0.125 * n_w:.3f} m/s ('w' x{n_w})", flush=True)
         time.sleep(1.0)
-        stop_x = final_goal_x()
+        stop_x = final_goal_x(terrain_meta, a.goal_terrain)
         if stop_x is not None:
             print(
                 f"[run] 종료 지점: x ≥ {stop_x:.2f} m (마지막 goal) 또는 {a.duration:.0f} s",

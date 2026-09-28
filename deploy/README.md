@@ -5,6 +5,19 @@ Jetson(Ubuntu 20.04, L4T R35.3.1)은 LiDAR 점군·LowState를 받아 odometry�
 elevation map을 계산하고 terrain scandots와 본체 gyro bias를 DDS로 전달합니다.
 ROS는 leg·MIT odometry에 필요하지 않습니다.
 
+## 현재 배포 정책
+
+`parkour/contract/policy.onnx`는 Isaaclab_Parkour의
+`2026-09-24_09-21-05_lidar/model_26800.pt`에서 변환한 정책입니다.
+`.pt` 원본은 이 배포 패키지에 포함하지 않습니다. 노트북에서는 ONNX를 직접 로드하며,
+원본 체크포인트 경로는 출처 기록이므로 노트북에 해당 학습 로그가 없어도 됩니다.
+체크포인트와 ONNX의 SHA-256은 `policy_meta.json`에 기록되어 있습니다.
+
+2026-09-28 원격 MuJoCo 테스트에서 GT odometry는 ramp(0.675 m/s)와
+stair(0.55 m/s)를 완주했습니다. leg는 ramp 완주·stair 실패,
+MIT는 ramp에서 추정 pose 무효로 중지·stair 실패였습니다.
+이 결과는 실기 주행 검증을 뜻하지 않습니다.
+
 ## 노트북 설치와 빌드
 
 저장소 기본 경로는 `~/workspace/codes/unitree_rl_lab`입니다. 다른 경로를 쓰면

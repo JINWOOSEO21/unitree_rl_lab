@@ -1,6 +1,6 @@
 {
-  "checkpoint": "/home/seo-jinwoo/workspace/codes/Isaaclab_Parkour/logs/rsl_rl/unitree_go2_parkour/student_pretrained/trained_v1.3~30K/model_29998.pt",
-  "iter": 29998,
+  "checkpoint": "logs/rsl_rl/unitree_go2_parkour/2026-09-24_09-21-05_lidar/model_26800.pt",
+  "iter": 26800,
   "activation": "elu",
   "tanh_encoder_output": false,
   "opset": 11,
@@ -39,5 +39,8 @@
     "channel_size": 10,
     "num_hist": 10
   },
-  "note": "hist 는 현재 prop(t)를 제외한 과거 num_hist 프레임 [t-10 ... t-1] 순서다. 추론 뒤 현재 prop을 push한다. prop 인덱스 6:8(delta_yaw)은 history 에 넣기 전에 0 으로 만든다. 배포 진입 시에는 최초 prop을 마스킹한 값 10개로 prime한다."
+  "note": "hist 는 현재 prop(t)를 제외한 과거 num_hist 프레임 [t-10 ... t-1] 순서다. 추론 뒤 현재 prop을 push한다. prop 인덱스 6:8(delta_yaw)은 history 에 넣기 전에 0 으로 만든다. 배포 진입 시에는 최초 prop을 마스킹한 값 10개로 prime한다.",
+  "checkpoint_repository": "Isaaclab_Parkour",
+  "checkpoint_sha256": "58f658f9555ff12f236b833dba6346a1d2b209276b8fa12b1aaebc2f59176524",
+  "onnx_sha256": "8bdc5cd70086895a95966656a152db939b89cfffac801d64ed0ac2a0bd7a8605"
 }

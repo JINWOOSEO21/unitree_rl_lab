@@ -158,6 +158,11 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("record")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--scene", default=str(MJ_ROBOTS / SCENE_FILE), help="MuJoCo 씬 XML")
+    ap.add_argument("--terrain-meta", default=str(META), help="GT scandots 용 terrain_meta.npz")
+    ap.add_argument(
+        "--terrain-label", default="ramp", help="영상 왼쪽 위에 표시할 지형 이름"
+    )
     ap.add_argument("--fps", type=int, default=30)
     ap.add_argument("--start", type=float, default=None, help="영상 시작 sim 시각 [s] (기본: 걷기 시작 1 s 전)")
     ap.add_argument("--duration", type=float, default=None)
@@ -167,7 +172,8 @@ def main() -> int:
     ap.add_argument("--vmax", type=float, default=0.8)
     a = ap.parse_args()
 
-    scene_file, spawn, zfix, meta_path = SCENE_FILE, None, 0.0, META
+    scene_path = Path(a.scene).resolve()
+    spawn, zfix, meta_path = None, 0.0, Path(a.terrain_meta).resolve()
     r = load_record(Path(a.record))
     t_raw, q_il, quat, base = raw_streams(r)
     t_em = r["stamp"].astype(np.float64)
@@ -201,7 +207,7 @@ def main() -> int:
     scan_xy = kin.scan_offsets_xy
     grid = ScanGrid(scan_xy)
 
-    model = mujoco.MjModel.from_xml_path(str(MJ_ROBOTS / scene_file))
+    model = mujoco.MjModel.from_xml_path(str(scene_path))
     # 오프스크린 버퍼 기본값(640×480)보다 큰 프레임을 그리려면 먼저 키워야 한다
     model.vis.global_.offwidth = max(model.vis.global_.offwidth, a.width)
     model.vis.global_.offheight = max(model.vis.global_.offheight, a.height)
@@ -239,7 +245,7 @@ def main() -> int:
         left = cv2.cvtColor(renderer.render(), cv2.COLOR_RGB2BGR)
         cv2.putText(
             left,
-            f"ramp  odom={odom_name if leg_mode else 'GT'}  t={tf - t0:5.2f}s  "
+            f"{a.terrain_label}  odom={odom_name if leg_mode else 'GT'}  t={tf - t0:5.2f}s  "
             f"x={base[i, 0]:+.2f} z={base[i, 2]:.2f}",
             (10, 26),
             cv2.FONT_HERSHEY_SIMPLEX,
