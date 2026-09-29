@@ -19,7 +19,7 @@
 meta:
   measured_at: "2026-09-02"
   robot: unitree_go2
-  policy_checkpoint: logs/rsl_rl/unitree_go2_parkour/2026-09-24_09-21-05_lidar/model_26800.pt
+  policy_checkpoint: /home/seojinwoo/model_29999.pt
   sources:
     isaaclab_cfg: parkour_tasks/default_cfg.py  # ParkourDefaultSceneCfg
     mjcf_path: mujoco_menagerie/unitree_go2/go2.xml

@@ -1,0 +1,29 @@
+{
+  "onnx_check": "passed",
+  "samples": 8,
+  "max_abs_error": 1.9073486328125e-06,
+  "rtol": 1e-05,
+  "atol": 1e-05,
+  "inputs": {
+    "prop": [
+      1,
+      53
+    ],
+    "scan": [
+      1,
+      132
+    ],
+    "hist": [
+      1,
+      530
+    ]
+  },
+  "outputs": {
+    "actions": [
+      1,
+      12
+    ]
+  },
+  "onnxruntime": "1.24.4",
+  "export_compatibility": "Original exporter run with modules namespace loading to avoid unrelated rsl_rl runner imports; dynamo=False preserves legacy TorchScript export on torch 2.9."
+}
